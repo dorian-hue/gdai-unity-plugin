@@ -1,0 +1,21 @@
+{
+    "name": "GDAI.Editor",
+    "rootNamespace": "GDAI.Bridge",
+    "references": [
+        "GDAI.Runtime",
+        "Unity.Newtonsoft.Json",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
