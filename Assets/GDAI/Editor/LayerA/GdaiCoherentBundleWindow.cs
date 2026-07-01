@@ -35,6 +35,21 @@ namespace GDAI.Bridge.Editor.LayerA
         private const string PrefLastRuntimeReady = "GDAI_LayerA_LastRuntimeReadyDashSync";
         private const string PrefLastBackup = "GDAI_LayerA_LastBackupPath";
 
+        // Production Bundle Proxy config (non-secret persisted; token persisted only if user opts in)
+        private const string PrefProdUrl = "GDAI_Prod_FunctionUrl";
+        private const string PrefProdProject = "GDAI_Prod_ProjectId";
+        private const string PrefProdRemember = "GDAI_Prod_RememberToken";
+        private const string PrefProdToken = "GDAI_Prod_UserToken";
+
+        private const string DefaultProxyUrl = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1/unity-bundle-proxy";
+
+        private string _prodUrl = DefaultProxyUrl;
+        private string _prodProjectId = "";
+        private string _prodSnapshotId = "";
+        private bool _prodUseLatest = true;
+        private string _prodJwt = "";       // in-memory by default; never logged
+        private bool _prodRememberToken;
+
         private const string UrlPlaceholder = "https://YOUR-PROJECT.supabase.co";
 
         private string _supabaseUrl = UrlPlaceholder;
@@ -87,6 +102,11 @@ namespace GDAI.Bridge.Editor.LayerA
             _sumDashStatus = EditorPrefs.GetString(PrefLastDashStatus, "");
             _sumRuntimeReady = EditorPrefs.GetBool(PrefLastRuntimeReady, false);
             _lastBackupPath = EditorPrefs.GetString(PrefLastBackup, "");
+
+            _prodUrl = EditorPrefs.GetString(PrefProdUrl, DefaultProxyUrl);
+            _prodProjectId = EditorPrefs.GetString(PrefProdProject, "");
+            _prodRememberToken = EditorPrefs.GetBool(PrefProdRemember, false);
+            _prodJwt = _prodRememberToken ? EditorPrefs.GetString(PrefProdToken, "") : ""; // token only if opted in
         }
 
         private void SaveConnectionPrefs()
@@ -134,20 +154,67 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
-            DrawSimpleHeader();
-            DrawPrimaryButtons();
-            DrawDocButtons();
+            DrawProductionConnector(); // default, production path (backend bundle proxy + user JWT)
+            DrawDocButtons();          // scene tools + wiring guide (connector-agnostic)
 
             EditorGUILayout.Space();
             EditorGUI.BeginChangeCheck();
-            _advanced = EditorGUILayout.Foldout(_advanced, "Advanced Debug · internal validation transport", true);
+            _advanced = EditorGUILayout.Foldout(_advanced, "Advanced Debug · internal-only direct Supabase transport", true);
             if (EditorGUI.EndChangeCheck()) EditorPrefs.SetBool(PrefAdvanced, _advanced);
-            if (_advanced) DrawAdvanced();
+            if (_advanced)
+            {
+                DrawSimpleHeader();   // anon-key connection status + last bundle
+                DrawPrimaryButtons(); // anon-key Import Latest/Same/Refetch
+                DrawAdvanced();       // anon-key fields + debug fetch/import + validation
+            }
 
             DrawStatus();
             DrawDocViewer();
 
             EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawProductionConnector()
+        {
+            EditorGUILayout.LabelField("GDAI Unity Connector · Production Bundle Proxy", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox("Production path: the plugin calls the GDAI backend bundle proxy with your user access token. " +
+                                    "It never contacts the database directly and never uses a service_role or anon key here.", MessageType.None);
+
+            using (new EditorGUI.DisabledScope(_busy))
+            {
+                EditorGUI.BeginChangeCheck();
+                _prodUrl = EditorGUILayout.TextField("Backend Function URL", _prodUrl);
+                _prodProjectId = EditorGUILayout.TextField("Project ID", _prodProjectId);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    EditorPrefs.SetString(PrefProdUrl, _prodUrl);
+                    EditorPrefs.SetString(PrefProdProject, _prodProjectId);
+                }
+
+                _prodUseLatest = EditorGUILayout.Toggle("Fetch latest coherent bundle", _prodUseLatest);
+                using (new EditorGUI.DisabledScope(_prodUseLatest))
+                    _prodSnapshotId = EditorGUILayout.TextField("Snapshot ID", _prodSnapshotId);
+
+                _prodJwt = EditorGUILayout.PasswordField("User Access Token / JWT", _prodJwt);
+
+                EditorGUI.BeginChangeCheck();
+                _prodRememberToken = EditorGUILayout.ToggleLeft(
+                    "Remember token in this Unity Editor (local only — not recommended)", _prodRememberToken);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    EditorPrefs.SetBool(PrefProdRemember, _prodRememberToken);
+                    if (_prodRememberToken) EditorPrefs.SetString(PrefProdToken, _prodJwt);
+                    else EditorPrefs.DeleteKey(PrefProdToken);
+                }
+
+                EditorGUILayout.Space();
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button("Fetch Bundle")) ProdFetch(import: false);
+                    if (GUILayout.Button("Fetch and Import", GUILayout.Height(20))) ProdFetch(import: true);
+                    if (GUILayout.Button("Clear Token", GUILayout.Width(96))) ProdClearToken();
+                }
+            }
         }
 
         private void DrawSimpleHeader()
@@ -430,6 +497,63 @@ namespace GDAI.Bridge.Editor.LayerA
                 _busy = false;
                 Repaint();
             }
+        }
+
+        // Production: fetch a normalized DTO from the backend proxy (user JWT), validate
+        // (shape + SHA-256 + path safety + existing coherent-bundle validator), then import
+        // through the SAME Layer A core (backup + meta-GUID preservation).
+        private async void ProdFetch(bool import)
+        {
+            if (string.IsNullOrWhiteSpace(_prodUrl)) { SetStatus(BundleStatus.FailedValidation, "Backend Function URL is empty."); return; }
+            if (string.IsNullOrWhiteSpace(_prodProjectId)) { SetStatus(BundleStatus.FailedValidation, "Project ID is empty."); return; }
+            if (!_prodUseLatest && string.IsNullOrWhiteSpace(_prodSnapshotId)) { SetStatus(BundleStatus.FailedValidation, "Enter a Snapshot ID or enable 'Fetch latest'."); return; }
+            if (string.IsNullOrWhiteSpace(_prodJwt)) { SetStatus(BundleStatus.FailedValidation, "A user access token is required."); return; }
+
+            if (_prodRememberToken) EditorPrefs.SetString(PrefProdToken, _prodJwt);
+
+            _busy = true; _fetched = null; _validation = null;
+            SetStatus(BundleStatus.Fetched, "Fetching bundle via proxy...");
+            bool validated = false;
+            GdaiHotReloadSnapshot snap = null;
+            try
+            {
+                var dto = _prodUseLatest
+                    ? await GdaiBundleProxyClient.FetchLatest(_prodUrl.Trim(), _prodProjectId.Trim(), _prodJwt)
+                    : await GdaiBundleProxyClient.FetchBySnapshot(_prodUrl.Trim(), _prodProjectId.Trim(), _prodSnapshotId.Trim(), _prodJwt);
+
+                var dtoErrors = GdaiBundleProxyClient.ValidateDto(dto);
+                if (dtoErrors.Count > 0)
+                {
+                    SetStatus(BundleStatus.FailedValidation, "Bundle rejected: " + string.Join(" | ", dtoErrors));
+                    return;
+                }
+
+                snap = GdaiBundleProxyClient.ToSnapshot(dto);
+                _fetched = snap;
+                _validation = CoherentBundleValidator.Validate(snap);
+                if (!_validation.Ok)
+                {
+                    _status = BundleStatus.FailedValidation;
+                    _statusLine = $"Fetched {snap.id} · {_validation.Errors.Count} validation error(s) · import blocked.";
+                    return;
+                }
+                SaveSummary(snap);
+                validated = true;
+                _status = BundleStatus.Validated;
+                _statusLine = $"Fetched and validated via proxy · snapshot {snap.id} · {snap.assets.Count} files.";
+            }
+            catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
+            catch (Exception e) { SetStatus(BundleStatus.FailedValidation, "Bundle proxy error: " + e.Message); }
+            finally { _busy = false; Repaint(); }
+
+            if (import && validated && snap != null) DoImport(snap);
+        }
+
+        private void ProdClearToken()
+        {
+            _prodJwt = "";
+            EditorPrefs.DeleteKey(PrefProdToken);
+            SetStatus(_status, "Token cleared.");
         }
 
         private void ShowDoc(string fileName)
