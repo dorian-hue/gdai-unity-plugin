@@ -5,7 +5,9 @@
   "description": "Official plugin for GameDevs.AI — realtime asset sync, architecture graph import, and code generation bridge.",
   "unity": "6000.4",
   "unityRelease": "1f1",
-  "dependencies": {},
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
   "keywords": ["gdai", "gamedevs.ai", "ai", "realtime", "bridge"],
   "author": {
     "name": "GameDevs.AI",

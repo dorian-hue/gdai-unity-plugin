@@ -28,3 +28,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# GDAI Layer A generated-bundle backups (outside Assets/)
+.gdai/
