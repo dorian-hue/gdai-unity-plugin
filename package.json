@@ -1,6 +1,6 @@
 {
   "name": "ai.gamedevs.plugin",
-  "version": "0.1.0-alpha.7.1",
+  "version": "0.1.0-alpha.7.2",
   "displayName": "GDAI Plugin",
   "description": "Official plugin for GameDevs.AI — realtime asset sync, architecture graph import, and code generation bridge.",
   "unity": "6000.4",
