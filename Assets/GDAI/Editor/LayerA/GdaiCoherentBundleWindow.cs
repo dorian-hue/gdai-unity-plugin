@@ -7,8 +7,9 @@ using UnityEngine;
 
 // =====================================================================================
 // GDAI Unity Plugin · Layer A · EditorWindow ("GDAI Unity Connector").
-// Simple mode = product-credible connector (no Supabase/snapshot jargon).
-// Advanced Debug = the internal validation transport (direct hot_reload_snapshots).
+// Default UI = product flow only: Connection → Project → Bundle → optional Scene Wiring.
+// Troubleshooting (collapsed) = manual JWT fallback, diagnostics, raw validation details.
+// Developer Mode (compiled only with GDAI_INTERNAL_DEBUG) = direct Supabase transport.
 // A persisted "last bundle" summary survives domain reload so the window is never blank
 // after import. Layer A still does NOT auto-bind, create scenes/prefabs, or fix packages.
 // =====================================================================================
@@ -42,6 +43,37 @@ namespace GDAI.Bridge.Editor.LayerA
         private const string PrefProdToken = "GDAI_Prod_UserToken";
 
         private const string DefaultProxyUrl = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1/unity-bundle-proxy";
+
+        // MVP-C · device pairing + scoped token + selectors
+        private const string DefaultFunctionsBase = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1";
+        private const string PluginVersion = "0.1.0-alpha.8.0";
+        private const string PrefFunctionsBase = "GDAI_MvpC_FunctionsBase";
+        private const string PrefPluginToken = "GDAI_MvpC_PluginToken";   // scoped gdai_plugin_v1.* token
+        private const string PrefSelProject = "GDAI_MvpC_SelectedProjectId";
+        private const string PrefSelSnapshot = "GDAI_MvpC_SelectedSnapshotId";
+
+        private string _functionsBase = DefaultFunctionsBase;
+        private string _pluginToken = "";      // scoped token; never logged, prefix-only in UI
+        private string _selProjectId = "";
+        private string _selProjectName = "";
+        private string _selSnapshot = "";
+
+        // device-pairing transient state (never persisted)
+        private string _deviceCode, _pollSecret, _userCode, _verificationUrl;
+        private int _pollInterval = 3;
+        private double _pollExpiresAt;
+        private bool _connecting;
+        private bool _cancelPoll;
+
+        private List<GdaiCatalogProject> _projects = new List<GdaiCatalogProject>();
+        private int _projIndex;
+        private List<GdaiCatalogBundle> _bundles = new List<GdaiCatalogBundle>();
+        private int _bundleIndex;
+        private bool _showManualFallback;   // nested inside Troubleshooting · collapsed by default
+        private bool _showSceneWiring;      // "Optional: Scene Wiring" foldout · collapsed by default
+        private bool _showTroubleshooting;  // "Troubleshooting" foldout · collapsed by default
+        private double _codeCopiedUntil;    // transient · "Copied" feedback window for the device code
+        private string _lastErrorDetail = ""; // transient · raw exception/validation text, shown only under Troubleshooting
 
         private string _prodUrl = DefaultProxyUrl;
         private string _prodProjectId = "";
@@ -107,7 +139,15 @@ namespace GDAI.Bridge.Editor.LayerA
             _prodProjectId = EditorPrefs.GetString(PrefProdProject, "");
             _prodRememberToken = EditorPrefs.GetBool(PrefProdRemember, false);
             _prodJwt = _prodRememberToken ? EditorPrefs.GetString(PrefProdToken, "") : ""; // token only if opted in
+
+            _functionsBase = EditorPrefs.GetString(PrefFunctionsBase, DefaultFunctionsBase);
+            _pluginToken = EditorPrefs.GetString(PrefPluginToken, "");   // scoped token persists (revocable)
+            _selProjectId = EditorPrefs.GetString(PrefSelProject, "");
+            _selSnapshot = EditorPrefs.GetString(PrefSelSnapshot, "");
         }
+
+        private bool IsConnected => !string.IsNullOrEmpty(_pluginToken);
+        private static string TokenPrefix(string t) => string.IsNullOrEmpty(t) ? "(none)" : (t.Length > 16 ? t.Substring(0, 16) + "…" : t);
 
         private void SaveConnectionPrefs()
         {
@@ -154,19 +194,16 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
-            DrawProductionConnector(); // default, production path (backend bundle proxy + user JWT)
-            DrawDocButtons();          // scene tools + wiring guide (connector-agnostic)
+            DrawConnectionSection();      // 1 · Connection (device pairing + scoped token)
+            DrawProjectSection();         // 2 · Project (authorized project selector)
+            DrawBundleSection();          // 3 · Bundle (Import Latest Bundle)
+            DrawSceneWiringSection();     // 4 · Optional: Scene Wiring (collapsed)
 
-            EditorGUILayout.Space();
-            EditorGUI.BeginChangeCheck();
-            _advanced = EditorGUILayout.Foldout(_advanced, "Advanced Debug · internal-only direct Supabase transport", true);
-            if (EditorGUI.EndChangeCheck()) EditorPrefs.SetBool(PrefAdvanced, _advanced);
-            if (_advanced)
-            {
-                DrawSimpleHeader();   // anon-key connection status + last bundle
-                DrawPrimaryButtons(); // anon-key Import Latest/Same/Refetch
-                DrawAdvanced();       // anon-key fields + debug fetch/import + validation
-            }
+            DrawTroubleshootingSection(); // support/debug only (collapsed)
+
+#if GDAI_INTERNAL_DEBUG
+            DrawDeveloperSection();       // INTERNAL ONLY · direct Supabase transport
+#endif
 
             DrawStatus();
             DrawDocViewer();
@@ -174,10 +211,100 @@ namespace GDAI.Bridge.Editor.LayerA
             EditorGUILayout.EndScrollView();
         }
 
+        // ----------------------------- MVP-C sections -----------------------------
+
+        private void DrawConnectionSection()
+        {
+            EditorGUILayout.LabelField("Connection", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Status", IsConnected ? "Connected" : (_connecting ? "Waiting for browser approval" : "Not connected"));
+
+            using (new EditorGUI.DisabledScope(_busy))
+            {
+                if (!IsConnected && !_connecting)
+                {
+                    if (GUILayout.Button("Connect to GameDevs.AI", GUILayout.Height(26))) ConnectStart();
+                }
+                else if (_connecting)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        EditorGUILayout.LabelField("Code", string.IsNullOrEmpty(_userCode) ? "…" : _userCode);
+                        if (!string.IsNullOrEmpty(_userCode))
+                        {
+                            bool justCopied = EditorApplication.timeSinceStartup < _codeCopiedUntil;
+                            if (GUILayout.Button(justCopied ? "Copied" : "Copy", GUILayout.Width(64)))
+                            {
+                                EditorGUIUtility.systemCopyBuffer = _userCode;
+                                _codeCopiedUntil = EditorApplication.timeSinceStartup + 1.5;
+                                Repaint();
+                            }
+                        }
+                    }
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (GUILayout.Button("Open Browser")) { if (!string.IsNullOrEmpty(_verificationUrl)) Application.OpenURL(_verificationUrl); }
+                        if (GUILayout.Button("Cancel")) _cancelPoll = true;
+                    }
+                }
+                else
+                {
+                    if (GUILayout.Button("Disconnect")) Disconnect();
+                }
+            }
+        }
+
+        private void DrawProjectSection()
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Project", EditorStyles.boldLabel);
+            using (new EditorGUI.DisabledScope(_busy || !IsConnected))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (_projects.Count == 0)
+                    {
+                        EditorGUILayout.LabelField(IsConnected
+                            ? "No authorized projects. Reconnect and authorize a project in your browser."
+                            : "Connect first.");
+                    }
+                    else
+                    {
+                        var names = _projects.ConvertAll(p => string.IsNullOrEmpty(p.name) ? p.project_id : p.name).ToArray();
+                        int newIndex = EditorGUILayout.Popup(_projIndex, names);
+                        if (newIndex != _projIndex) { _projIndex = newIndex; OnProjectSelected(); }
+                    }
+                    if (GUILayout.Button("Refresh Projects", GUILayout.Width(130))) RefreshProjects();
+                }
+            }
+        }
+
+        private void DrawBundleSection()
+        {
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Bundle", EditorStyles.boldLabel);
+
+            // alpha.8 default path: one primary CTA only. The bundle selector/list UI is
+            // intentionally not exposed here (Refresh Bundles list path is a known follow-up).
+            using (new EditorGUI.DisabledScope(_busy || !IsConnected || string.IsNullOrEmpty(_selProjectId)))
+            {
+                if (GUILayout.Button("Import Latest Bundle", GUILayout.Height(28)))
+                    FetchProd(latest: true, import: true);
+            }
+
+            if (HasLastSnapshot)
+            {
+                EditorGUILayout.LabelField("Snapshot", Short(_sumSnapshot) + "…");
+                EditorGUILayout.LabelField("Assets", _sumAssetCount.ToString());
+                if (!string.IsNullOrEmpty(_sumSource)) EditorGUILayout.LabelField("Source", _sumSource);
+                if (!string.IsNullOrEmpty(_lastBackupPath)) EditorGUILayout.LabelField("Backup", _lastBackupPath);
+            }
+        }
+
+        private static string Short(string id) => string.IsNullOrEmpty(id) ? "(none)" : (id.Length > 8 ? id.Substring(0, 8) : id);
+
         private void DrawProductionConnector()
         {
-            EditorGUILayout.LabelField("GDAI Unity Connector · Production Bundle Proxy", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("Production path: the plugin calls the GDAI backend bundle proxy with your user access token. " +
+            EditorGUILayout.HelpBox("Support fallback: calls the GDAI backend bundle proxy with a pasted user access token. " +
                                     "It never contacts the database directly and never uses a service_role or anon key here.", MessageType.None);
 
             using (new EditorGUI.DisabledScope(_busy))
@@ -265,19 +392,68 @@ namespace GDAI.Bridge.Editor.LayerA
                                         "Never paste a service_role key.", MessageType.Info);
         }
 
-        private void DrawDocButtons()
+        private void DrawSceneWiringSection()
         {
             EditorGUILayout.Space();
+            _showSceneWiring = EditorGUILayout.Foldout(_showSceneWiring, "Optional: Scene Wiring", true);
+            if (!_showSceneWiring) return;
+
+            using (new EditorGUI.DisabledScope(_busy))
+            {
+                if (GUILayout.Button("Auto-bind Scene References")) AutoBindScene();
+                if (GUILayout.Button("Auto-bind Input Actions")) AutoBindInputActions();
+                if (GUILayout.Button("Analyze Playable Scene")) LayerC.GdaiMinimalPlayableSceneBuilder.AnalyzeMenu();
+                if (GUILayout.Button("Open Wiring Guide")) ShowDoc("README_WIRING.md");
+            }
+        }
+
+        private void DrawTroubleshootingSection()
+        {
+            EditorGUILayout.Space();
+            _showTroubleshooting = EditorGUILayout.Foldout(_showTroubleshooting, "Troubleshooting", true);
+            if (!_showTroubleshooting) return;
+
+            EditorGUILayout.HelpBox("For support/debugging only. Most users should not change these settings.", MessageType.Warning);
+            if (IsConnected) EditorGUILayout.LabelField("Token (prefix)", TokenPrefix(_pluginToken));
+            if (!string.IsNullOrEmpty(_selProjectId))
+                EditorGUILayout.LabelField("Project (raw)", $"{_selProjectName} ({_selProjectId})");
+
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("Open Wiring Guide")) ShowDoc("README_WIRING.md");
                 if (GUILayout.Button("Reveal Generated Folder")) RevealGeneratedFolder();
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_lastBackupPath)))
+                {
+                    if (GUILayout.Button("Reveal Last Backup")) RevealLastBackup();
+                }
             }
-            if (GUILayout.Button("Auto-bind Current Scene (binds existing objects only)"))
-                AutoBindScene();
-            if (GUILayout.Button("Auto-bind Input Actions (existing assets only)"))
-                AutoBindInputActions();
+
+            if (!string.IsNullOrEmpty(_lastErrorDetail))
+            {
+                EditorGUILayout.LabelField("Last error (raw)", EditorStyles.boldLabel);
+                EditorGUILayout.SelectableLabel(_lastErrorDetail, EditorStyles.textArea, GUILayout.MinHeight(60));
+            }
+
+            EditorGUILayout.Space();
+            _showManualFallback = EditorGUILayout.Foldout(_showManualFallback, "Manual Token Fallback · paste a user JWT (support only)", true);
+            if (_showManualFallback) DrawProductionConnector();
+
+            DrawValidationDetails(); // raw validation details live here, not in the default UI
         }
+
+#if GDAI_INTERNAL_DEBUG
+        private void DrawDeveloperSection()
+        {
+            EditorGUILayout.Space();
+            EditorGUI.BeginChangeCheck();
+            _advanced = EditorGUILayout.Foldout(_advanced, "Developer Mode · INTERNAL ONLY · direct Supabase transport", true);
+            if (EditorGUI.EndChangeCheck()) EditorPrefs.SetBool(PrefAdvanced, _advanced);
+            if (!_advanced) return;
+
+            DrawSimpleHeader();   // anon-key connection status + last bundle
+            DrawPrimaryButtons(); // anon-key Import Latest/Same/Refetch
+            DrawAdvanced();       // anon-key fields + debug fetch/import + validation
+        }
+#endif
 
         private void AutoBindScene()
         {
@@ -333,6 +509,15 @@ namespace GDAI.Bridge.Editor.LayerA
             DrawValidationDetails();
         }
 
+        // Display-only rewrite: keep fixture/project-specific validator wording out of product UI.
+        // The validator itself (CoherentBundleValidator) is intentionally untouched.
+        private static string FriendlyWarning(string w)
+        {
+            if (string.IsNullOrEmpty(w)) return w;
+            if (w.Contains("expected 'patched' for Project-SLASH")) return "Dash runtime sync status is missing.";
+            return w;
+        }
+
         private void DrawValidationDetails()
         {
             if (_fetched == null && _validation == null) return;
@@ -349,20 +534,18 @@ namespace GDAI.Bridge.Editor.LayerA
             {
                 EditorGUILayout.LabelField(_validation.Ok ? "VALIDATED · safe to import" : "FAILED_VALIDATION · import blocked");
                 foreach (var e in _validation.Errors) EditorGUILayout.HelpBox(e, MessageType.Error);
-                foreach (var w in _validation.Warnings) EditorGUILayout.HelpBox(w, MessageType.Warning);
+                foreach (var w in _validation.Warnings) EditorGUILayout.HelpBox(FriendlyWarning(w), MessageType.Warning);
             }
         }
 
         private void DrawStatus()
         {
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Status", EditorStyles.boldLabel);
             bool isError = _status == BundleStatus.FailedValidation || _status == BundleStatus.FailedWrite;
             EditorGUILayout.HelpBox(_statusLine, isError ? MessageType.Error : MessageType.Info);
             if (_status == BundleStatus.RefreshTriggered)
-                EditorGUILayout.HelpBox("Import complete. Check the Console for compile warnings/errors. " +
-                                        "Obsolete-API warnings (e.g. Rigidbody2D.velocity) are codegen debt, not import failures. " +
-                                        "Layer A does not auto-wire scene references.", MessageType.Info);
+                EditorGUILayout.HelpBox("Import complete. If the Console shows compile errors from generated code, " +
+                                        "that is a generated bundle issue, not a connector issue.", MessageType.Info);
         }
 
         private void DrawDocViewer()
@@ -502,51 +685,210 @@ namespace GDAI.Bridge.Editor.LayerA
         // Production: fetch a normalized DTO from the backend proxy (user JWT), validate
         // (shape + SHA-256 + path safety + existing coherent-bundle validator), then import
         // through the SAME Layer A core (backup + meta-GUID preservation).
+        // Manual JWT fallback (collapsed): reuses the same proxy fetch core with a pasted user JWT.
         private async void ProdFetch(bool import)
         {
-            if (string.IsNullOrWhiteSpace(_prodUrl)) { SetStatus(BundleStatus.FailedValidation, "Backend Function URL is empty."); return; }
-            if (string.IsNullOrWhiteSpace(_prodProjectId)) { SetStatus(BundleStatus.FailedValidation, "Project ID is empty."); return; }
-            if (!_prodUseLatest && string.IsNullOrWhiteSpace(_prodSnapshotId)) { SetStatus(BundleStatus.FailedValidation, "Enter a Snapshot ID or enable 'Fetch latest'."); return; }
-            if (string.IsNullOrWhiteSpace(_prodJwt)) { SetStatus(BundleStatus.FailedValidation, "A user access token is required."); return; }
-
+            if (string.IsNullOrWhiteSpace(_prodUrl)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: Backend Function URL is required."); return; }
+            if (string.IsNullOrWhiteSpace(_prodProjectId)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: Project ID is required."); return; }
+            if (!_prodUseLatest && string.IsNullOrWhiteSpace(_prodSnapshotId)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: enter a Snapshot ID or enable 'Fetch latest'."); return; }
+            if (string.IsNullOrWhiteSpace(_prodJwt)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: a user access token is required."); return; }
             if (_prodRememberToken) EditorPrefs.SetString(PrefProdToken, _prodJwt);
+            await RunProxyFetch(_prodUrl, _prodProjectId, _prodUseLatest, _prodSnapshotId, _prodJwt, import);
+        }
 
-            _busy = true; _fetched = null; _validation = null;
+        // Shared proxy fetch + validate + import core. `token` is either a scoped plugin token
+        // (production) or a pasted user JWT (manual fallback) — both go out as Authorization: Bearer.
+        private async Task RunProxyFetch(string proxyUrl, string projectId, bool latest, string snapshotId, string token, bool import)
+        {
+            _busy = true; _fetched = null; _validation = null; _lastErrorDetail = "";
             SetStatus(BundleStatus.Fetched, "Fetching bundle via proxy...");
             bool validated = false;
             GdaiHotReloadSnapshot snap = null;
             try
             {
-                var dto = _prodUseLatest
-                    ? await GdaiBundleProxyClient.FetchLatest(_prodUrl.Trim(), _prodProjectId.Trim(), _prodJwt)
-                    : await GdaiBundleProxyClient.FetchBySnapshot(_prodUrl.Trim(), _prodProjectId.Trim(), _prodSnapshotId.Trim(), _prodJwt);
+                var dto = latest
+                    ? await GdaiBundleProxyClient.FetchLatest(proxyUrl.Trim(), projectId.Trim(), token)
+                    : await GdaiBundleProxyClient.FetchBySnapshot(proxyUrl.Trim(), projectId.Trim(), snapshotId.Trim(), token);
 
                 var dtoErrors = GdaiBundleProxyClient.ValidateDto(dto);
                 if (dtoErrors.Count > 0)
                 {
-                    SetStatus(BundleStatus.FailedValidation, "Bundle rejected: " + string.Join(" | ", dtoErrors));
+                    _lastErrorDetail = string.Join("\n", dtoErrors);
+                    SetStatus(BundleStatus.FailedValidation, "Bundle rejected by validation. Expand Troubleshooting for details.");
                     return;
                 }
 
                 snap = GdaiBundleProxyClient.ToSnapshot(dto);
                 _fetched = snap;
                 _validation = CoherentBundleValidator.Validate(snap);
-                if (!_validation.Ok)
-                {
-                    _status = BundleStatus.FailedValidation;
-                    _statusLine = $"Fetched {snap.id} · {_validation.Errors.Count} validation error(s) · import blocked.";
-                    return;
-                }
+                if (!_validation.Ok) { _status = BundleStatus.FailedValidation; _statusLine = $"Fetched {snap.id} · {_validation.Errors.Count} validation error(s) · import blocked."; return; }
                 SaveSummary(snap);
                 validated = true;
                 _status = BundleStatus.Validated;
                 _statusLine = $"Fetched and validated via proxy · snapshot {snap.id} · {snap.assets.Count} files.";
             }
             catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
-            catch (Exception e) { SetStatus(BundleStatus.FailedValidation, "Bundle proxy error: " + e.Message); }
+            catch (Exception e)
+            {
+                _lastErrorDetail = e.ToString();
+                SetStatus(BundleStatus.FailedValidation, "Bundle fetch failed. Expand Troubleshooting for technical details.");
+            }
             finally { _busy = false; Repaint(); }
 
             if (import && validated && snap != null) DoImport(snap);
+        }
+
+        // ---- MVP-C actions: device pairing + catalog + production fetch ----
+
+        private async void ConnectStart()
+        {
+            _connecting = true; _cancelPoll = false;
+            SetStatus(BundleStatus.Fetched, "Starting connection…");
+            try
+            {
+                var start = await GdaiPluginConnectionClient.Start(_functionsBase.Trim(), "Unity Editor", PluginVersion);
+                _deviceCode = start.device_code;
+                _pollSecret = start.poll_secret;
+                _userCode = start.user_code;
+                _verificationUrl = string.IsNullOrEmpty(start.verification_url) ? "https://plugin.gamedevs.ai/unity/connect" : start.verification_url;
+                _pollInterval = Mathf.Max(2, start.interval);
+                _pollExpiresAt = EditorApplication.timeSinceStartup + (start.expires_in > 0 ? start.expires_in : 300);
+                Application.OpenURL(_verificationUrl);
+                SetStatus(BundleStatus.Fetched, $"Awaiting approval. Enter code {_userCode} in the browser.");
+                Repaint();
+
+                while (!_cancelPoll && EditorApplication.timeSinceStartup < _pollExpiresAt)
+                {
+                    await EditorDelay(_pollInterval);
+                    if (_cancelPoll) break;
+
+                    GdaiConnectionPollResponse poll;
+                    try { poll = await GdaiPluginConnectionClient.Poll(_functionsBase.Trim(), _deviceCode, _pollSecret); }
+                    catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); break; }
+
+                    if (poll.status == "approved" && !string.IsNullOrEmpty(poll.connection_token))
+                    {
+                        _pluginToken = poll.connection_token;
+                        EditorPrefs.SetString(PrefPluginToken, _pluginToken);
+                        SetStatus(BundleStatus.Validated, "Connected to GDAI.");
+                        await LoadProjectsInternal();
+                        break;
+                    }
+                    if (poll.status == "denied") { SetStatus(BundleStatus.FailedValidation, "Connection denied in browser."); break; }
+                    if (poll.status == "expired") { SetStatus(BundleStatus.FailedValidation, "Connection code expired. Try again."); break; }
+                    if (poll.status == "consumed") { SetStatus(BundleStatus.FailedValidation, "Connection already used. Try again."); break; }
+                    // pending → keep polling
+                }
+                if (!IsConnected && !_cancelPoll && EditorApplication.timeSinceStartup >= _pollExpiresAt)
+                    SetStatus(BundleStatus.FailedValidation, "Connection timed out. Try again.");
+            }
+            catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
+            catch (Exception e) { SetStatus(BundleStatus.FailedValidation, "Connection error: " + e.Message); }
+            finally
+            {
+                _connecting = false;
+                _deviceCode = null; _pollSecret = null; // drop secrets once the flow ends
+                Repaint();
+            }
+        }
+
+        private static async Task EditorDelay(double seconds)
+        {
+            double end = EditorApplication.timeSinceStartup + seconds;
+            while (EditorApplication.timeSinceStartup < end) await Task.Yield();
+        }
+
+        private void Disconnect()
+        {
+            string token = _pluginToken;
+            _pluginToken = ""; EditorPrefs.DeleteKey(PrefPluginToken);
+            _projects.Clear(); _bundles.Clear(); _projIndex = 0; _bundleIndex = 0;
+            _selProjectId = ""; _selProjectName = ""; EditorPrefs.DeleteKey(PrefSelProject);
+            _selSnapshot = ""; EditorPrefs.DeleteKey(PrefSelSnapshot);
+            SetStatus(_status, "Disconnected.");
+            if (!string.IsNullOrEmpty(token)) _ = GdaiPluginConnectionClient.Revoke(_functionsBase.Trim(), token); // best-effort
+        }
+
+        private void OnProjectSelected()
+        {
+            if (_projIndex < 0 || _projIndex >= _projects.Count) return;
+            _selProjectId = _projects[_projIndex].project_id;
+            _selProjectName = _projects[_projIndex].name;
+            EditorPrefs.SetString(PrefSelProject, _selProjectId);
+            _bundles.Clear(); _bundleIndex = 0;
+            RefreshBundles();
+        }
+
+        private async void RefreshProjects() { await LoadProjectsInternal(); }
+
+        private async Task LoadProjectsInternal()
+        {
+            if (!IsConnected) { SetStatus(BundleStatus.FailedValidation, "Not connected."); return; }
+            _busy = true; SetStatus(_status, "Loading projects…");
+            try
+            {
+                _projects = await GdaiPluginCatalogClient.ListProjects(_functionsBase.Trim(), _pluginToken);
+                _projIndex = 0;
+                if (!string.IsNullOrEmpty(_selProjectId))
+                {
+                    int idx = _projects.FindIndex(p => p.project_id == _selProjectId);
+                    if (idx >= 0) _projIndex = idx;
+                }
+                if (_projects.Count > 0)
+                {
+                    _selProjectId = _projects[_projIndex].project_id;
+                    _selProjectName = _projects[_projIndex].name;
+                    EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                }
+                SetStatus(_status, $"Loaded {_projects.Count} project(s).");
+                if (_projects.Count > 0) await LoadBundlesInternal();
+            }
+            catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
+            catch (Exception e)
+            {
+                // Raw API/JSON exceptions stay out of the default UI (Troubleshooting only).
+                _lastErrorDetail = e.ToString();
+                SetStatus(BundleStatus.FailedValidation, "Projects could not be loaded. Expand Troubleshooting for details.");
+            }
+            finally { _busy = false; Repaint(); }
+        }
+
+        private async void RefreshBundles() { await LoadBundlesInternal(); }
+
+        private async Task LoadBundlesInternal()
+        {
+            if (!IsConnected) { SetStatus(BundleStatus.FailedValidation, "Not connected."); return; }
+            if (string.IsNullOrEmpty(_selProjectId)) { SetStatus(BundleStatus.FailedValidation, "Select a project first."); return; }
+            _busy = true; SetStatus(_status, "Loading bundles…");
+            try
+            {
+                _bundles = await GdaiPluginCatalogClient.ListBundles(_functionsBase.Trim(), _pluginToken, _selProjectId, 20);
+                _bundleIndex = 0;
+                SetStatus(_status, $"Loaded {_bundles.Count} coherent bundle(s).");
+            }
+            catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
+            catch (Exception e)
+            {
+                // Raw parse/convert exceptions stay out of the default UI (Troubleshooting only).
+                _lastErrorDetail = e.ToString();
+                SetStatus(_status, "Bundle metadata could not be fully parsed. Import Latest is still available. Expand Troubleshooting for details.");
+            }
+            finally { _busy = false; Repaint(); }
+        }
+
+        private async void FetchProd(bool latest, bool import)
+        {
+            if (!IsConnected) { SetStatus(BundleStatus.FailedValidation, "Not connected. Connect to GDAI first."); return; }
+            if (string.IsNullOrEmpty(_selProjectId)) { SetStatus(BundleStatus.FailedValidation, "Select a project first."); return; }
+            string snapshotId = "";
+            if (!latest)
+            {
+                if (_bundleIndex < 0 || _bundleIndex >= _bundles.Count) { SetStatus(BundleStatus.FailedValidation, "Select a bundle first."); return; }
+                snapshotId = _bundles[_bundleIndex].snapshot_id;
+                _selSnapshot = snapshotId; EditorPrefs.SetString(PrefSelSnapshot, _selSnapshot);
+            }
+            string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
+            await RunProxyFetch(proxyUrl, _selProjectId, latest, snapshotId, _pluginToken, import);
         }
 
         private void ProdClearToken()
