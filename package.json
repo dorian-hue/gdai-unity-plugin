@@ -1,12 +1,14 @@
 {
   "name": "ai.gamedevs.plugin",
-  "version": "0.1.0-alpha.7.3",
+  "version": "0.1.0-alpha.8.0",
   "displayName": "GDAI Plugin",
   "description": "Official plugin for GameDevs.AI — realtime asset sync, architecture graph import, and code generation bridge.",
   "unity": "6000.4",
   "unityRelease": "1f1",
   "dependencies": {
-    "com.unity.nuget.newtonsoft-json": "3.2.1"
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.textmeshpro": "3.0.6",
+    "com.unity.ugui": "2.0.0"
   },
   "keywords": [
     "gdai",
