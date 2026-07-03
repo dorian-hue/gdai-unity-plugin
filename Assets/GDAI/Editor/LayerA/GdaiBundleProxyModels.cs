@@ -21,6 +21,49 @@ namespace GDAI.Bridge.Editor.LayerA
         public List<GdaiBundleProxyFile> files = new List<GdaiBundleProxyFile>();
         public object wiring_manifest;
         public string readme;
+
+        // ---- DOWNSTREAM-BUILD-1 · binary asset payloads (additive; absent on old
+        //      backends -> stays an empty list; unknown on old plugins -> ignored). ----
+        public List<GdaiBundleProxyAsset> assets = new List<GdaiBundleProxyAsset>();
+        public List<GdaiBundleProxyAssetSkip> assets_skipped = new List<GdaiBundleProxyAssetSkip>();
+    }
+
+    /// <summary>
+    /// DOWNSTREAM-BUILD-1 · One binary asset payload, server-resolved to base64 by
+    /// unity-bundle-proxy (payload_ref is resolved backend-side; the plugin NEVER
+    /// talks to Supabase Storage and NEVER receives signed URLs or service keys).
+    /// sha256 is over the RAW DECODED BYTES (not the base64 string).
+    /// </summary>
+    [Serializable]
+    public class GdaiBundleProxyAsset
+    {
+        public string asset_id;
+        public string asset_type;      // "sprite" | "image" | "audio" | ...
+        public string role;
+        public string mime_type;       // "image/png" | ...
+        public string file_name;
+        public string unity_path;      // must live under Assets/GDAI_Generated/
+        public string payload_mode;    // "base64" (proxy always inlines; ref-only entries are skipped server-side)
+        public string payload_base64;
+        public long byte_size;
+        public string sha256;          // hex, over decoded bytes
+        public GdaiBundleProxyAssetSource source;
+    }
+
+    [Serializable]
+    public class GdaiBundleProxyAssetSource
+    {
+        public string project_id;
+        public string entity_id;
+        public string asset_row_id;
+        public string world_entity_name;
+    }
+
+    [Serializable]
+    public class GdaiBundleProxyAssetSkip
+    {
+        public string asset_id;
+        public string reason;
     }
 
     [Serializable]

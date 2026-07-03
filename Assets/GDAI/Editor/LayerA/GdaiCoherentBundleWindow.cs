@@ -704,9 +704,10 @@ namespace GDAI.Bridge.Editor.LayerA
             SetStatus(BundleStatus.Fetched, "Fetching bundle via proxy...");
             bool validated = false;
             GdaiHotReloadSnapshot snap = null;
+            GdaiBundleProxyDto dto = null; // hoisted: binary asset payloads are imported after DoImport (DOWNSTREAM-BUILD-1)
             try
             {
-                var dto = latest
+                dto = latest
                     ? await GdaiBundleProxyClient.FetchLatest(proxyUrl.Trim(), projectId.Trim(), token)
                     : await GdaiBundleProxyClient.FetchBySnapshot(proxyUrl.Trim(), projectId.Trim(), snapshotId.Trim(), token);
 
@@ -736,6 +737,21 @@ namespace GDAI.Bridge.Editor.LayerA
             finally { _busy = false; Repaint(); }
 
             if (import && validated && snap != null) DoImport(snap);
+
+            // ---- DOWNSTREAM-BUILD-1 · binary asset payloads (proxy channel only, additive) ----
+            // Runs only AFTER the text/code import fully succeeded (RefreshTriggered), so a bad
+            // asset payload can never break the existing code import path. Channel A (direct
+            // PostgREST fallback) intentionally does NOT carry payloads — proxy resolves them.
+            if (import && validated && snap != null &&
+                _status == BundleStatus.RefreshTriggered &&
+                dto != null && dto.assets != null && dto.assets.Count > 0)
+            {
+                var assetSummary = AssetPayloadImporter.ImportAll(dto.assets);
+                _statusLine += $" Binary assets: {assetSummary.Imported} imported, {assetSummary.SkippedWithReason.Count} skipped.";
+                if (dto.assets_skipped != null && dto.assets_skipped.Count > 0)
+                    Debug.Log($"[GDAI][LayerA][Assets] Backend skipped {dto.assets_skipped.Count} asset(s) before delivery (see proxy assets_skipped).");
+                Repaint();
+            }
         }
 
         // ---- MVP-C actions: device pairing + catalog + production fetch ----
