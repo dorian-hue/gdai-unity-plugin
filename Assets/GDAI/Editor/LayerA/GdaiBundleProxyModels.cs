@@ -26,6 +26,10 @@ namespace GDAI.Bridge.Editor.LayerA
         //      backends -> stays an empty list; unknown on old plugins -> ignored). ----
         public List<GdaiBundleProxyAsset> assets = new List<GdaiBundleProxyAsset>();
         public List<GdaiBundleProxyAssetSkip> assets_skipped = new List<GdaiBundleProxyAssetSkip>();
+
+        // ---- DOWNSTREAM-BUILD-3A · semantic role contract (additive; null on old
+        //      backends / unset projects; written to Assets/GDAI_RoleMap/ on import). ----
+        public GDAI.Bridge.Editor.LayerB.GdaiSemanticRoleMapData semantic_role_map;
     }
 
     /// <summary>

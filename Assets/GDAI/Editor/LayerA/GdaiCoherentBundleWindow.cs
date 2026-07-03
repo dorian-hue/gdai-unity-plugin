@@ -752,6 +752,14 @@ namespace GDAI.Bridge.Editor.LayerA
                     Debug.Log($"[GDAI][LayerA][Assets] Backend skipped {dto.assets_skipped.Count} asset(s) before delivery (see proxy assets_skipped).");
                 Repaint();
             }
+
+            // ---- DOWNSTREAM-BUILD-3A · semantic role map auto-write (additive; never fails import) ----
+            if (import && validated && snap != null && _status == BundleStatus.RefreshTriggered && dto != null)
+            {
+                bool wrote = GDAI.Bridge.Editor.LayerB.GdaiSemanticRoleMap.WriteFromBundle(dto.semantic_role_map, out string roleMapMsg);
+                Debug.Log("[GDAI][Assets][RoleMap] " + roleMapMsg);
+                if (wrote) _statusLine += " Role map updated.";
+            }
         }
 
         // ---- MVP-C actions: device pairing + catalog + production fetch ----

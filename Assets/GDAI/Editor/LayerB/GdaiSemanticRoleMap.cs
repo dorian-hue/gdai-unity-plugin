@@ -84,6 +84,35 @@ namespace GDAI.Bridge.Editor.LayerB
             return entry != null && !string.IsNullOrEmpty(entry.source) && GroundedSources.Contains(entry.source.Trim());
         }
 
+        /// <summary>
+        /// DOWNSTREAM-BUILD-3A · Writes a bundle-delivered role map to the local contract file.
+        /// Hard rule: a null/empty bundle map NEVER overwrites an existing local file
+        /// (backend without roles must not erase locally confirmed truth). Never throws.
+        /// </summary>
+        public static bool WriteFromBundle(GdaiSemanticRoleMapData data, out string message)
+        {
+            try
+            {
+                if (data == null || data.roles == null || data.roles.Count == 0)
+                {
+                    message = Exists()
+                        ? "bundle has no role map — existing local role map preserved"
+                        : "bundle has no role map — nothing written";
+                    return false;
+                }
+                string abs = AbsolutePath();
+                Directory.CreateDirectory(Path.GetDirectoryName(abs));
+                File.WriteAllText(abs, JsonConvert.SerializeObject(data, Formatting.Indented));
+                message = $"role map written ({data.roles.Count} role(s)) → {RoleMapPath}";
+                return true;
+            }
+            catch (Exception e)
+            {
+                message = "role map write failed: " + e.Message;
+                return false;
+            }
+        }
+
         private static string AbsolutePath()
         {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
