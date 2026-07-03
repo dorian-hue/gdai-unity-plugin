@@ -98,8 +98,10 @@ namespace GDAI.Bridge.Editor.LayerA
         /// <summary>
         /// Writes every valid payload under Assets/GDAI_Generated/ and imports it.
         /// Per-asset isolation: one bad asset never aborts the rest. Never throws.
+        /// After writing, generates the entity asset registry (DOWNSTREAM-BUILD-2) so
+        /// imported sprites are addressable by entity_id / asset_id.
         /// </summary>
-        public static ImportSummary ImportAll(List<GdaiBundleProxyAsset> assets)
+        public static ImportSummary ImportAll(List<GdaiBundleProxyAsset> assets, string sourceSnapshotId = null)
         {
             var summary = new ImportSummary();
             if (assets == null || assets.Count == 0) return summary;
@@ -140,6 +142,25 @@ namespace GDAI.Bridge.Editor.LayerA
                 {
                     summary.SkippedWithReason.Add(label + ": exception:" + e.Message);
                 }
+            }
+
+            // ---- DOWNSTREAM-BUILD-2 · entity asset registry (never fails the import) ----
+            try
+            {
+                var registry = GdaiImportedAssetRegistry.Build(
+                    assets, new HashSet<string>(summary.WrittenPaths), sourceSnapshotId);
+                if (registry.entries.Count > 0)
+                {
+                    string regErr;
+                    if (GdaiImportedAssetRegistry.Write(registry, out regErr))
+                        Debug.Log($"[GDAI][Assets][Registry] Registered {registry.entries.Count} entity sprite(s) → {GdaiImportedAssetRegistry.RegistryPath}");
+                    else
+                        Debug.LogWarning("[GDAI][Assets][Registry] Registry write failed (import itself succeeded): " + regErr);
+                }
+            }
+            catch (Exception regEx)
+            {
+                Debug.LogWarning("[GDAI][Assets][Registry] Registry generation failed (import itself succeeded): " + regEx.Message);
             }
 
             try { AssetDatabase.Refresh(); } catch { /* refresh best-effort */ }

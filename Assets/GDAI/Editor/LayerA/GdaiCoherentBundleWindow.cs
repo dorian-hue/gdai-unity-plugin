@@ -746,7 +746,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 _status == BundleStatus.RefreshTriggered &&
                 dto != null && dto.assets != null && dto.assets.Count > 0)
             {
-                var assetSummary = AssetPayloadImporter.ImportAll(dto.assets);
+                var assetSummary = AssetPayloadImporter.ImportAll(dto.assets, dto.snapshot_id);
                 _statusLine += $" Binary assets: {assetSummary.Imported} imported, {assetSummary.SkippedWithReason.Count} skipped.";
                 if (dto.assets_skipped != null && dto.assets_skipped.Count > 0)
                     Debug.Log($"[GDAI][LayerA][Assets] Backend skipped {dto.assets_skipped.Count} asset(s) before delivery (see proxy assets_skipped).");
