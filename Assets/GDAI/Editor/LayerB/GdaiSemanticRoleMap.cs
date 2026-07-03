@@ -24,6 +24,14 @@ using UnityEngine;
 // =====================================================================================
 namespace GDAI.Bridge.Editor.LayerB
 {
+    // ---- ROLE-OVERLAY-V2 · scope(与 web/EF 契约三端一致;规则改动须三处同步)----
+    [Serializable]
+    public class GdaiRoleScope
+    {
+        public string type;        // project_default | first_playable | level | scene | wave | module
+        public string id;          // optional (null for project-wide scopes)
+    }
+
     [Serializable]
     public class GdaiSemanticRoleEntry
     {
@@ -34,13 +42,18 @@ namespace GDAI.Bridge.Editor.LayerB
         public string confidence;  // optional free text ("high"/"low"/…) — informational
         public string evidence;    // where this mapping came from (human-readable)
         public string confirmed_by;
+
+        // V2 additive (absent on v1 maps — Newtonsoft leaves them null; scope resolves via rule below)
+        public GdaiRoleScope scope;
+        public List<string> required_assets;
     }
 
     [Serializable]
     public class GdaiSemanticRoleMapData
     {
-        public int version = 1;
+        public int version = 1;    // 1 (bootstrap) or 2
         public string project_id;  // informational; binding never branches on it
+        public GdaiRoleScope default_scope; // V2 additive
         public List<GdaiSemanticRoleEntry> roles = new List<GdaiSemanticRoleEntry>();
     }
 
@@ -54,6 +67,24 @@ namespace GDAI.Bridge.Editor.LayerB
         {
             "gdd", "world_entity", "bridge_api", "manual_confirmed",
         };
+
+        /// <summary>ROLE-OVERLAY-V2 · scopes the current binder consumes. Other scope values are
+        /// valid contract but must be ignored + reported (never bound).</summary>
+        public static readonly HashSet<string> BindingSupportedScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "project_default", "first_playable",
+        };
+
+        /// <summary>
+        /// ROLE-OVERLAY-V2 · scope 空缺硬规则(web/EF/plugin 三端一致):
+        /// entry.scope → map.default_scope → first_playable.
+        /// </summary>
+        public static GdaiRoleScope ResolveScope(GdaiSemanticRoleEntry entry, GdaiSemanticRoleMapData map)
+        {
+            if (entry != null && entry.scope != null && !string.IsNullOrEmpty(entry.scope.type)) return entry.scope;
+            if (map != null && map.default_scope != null && !string.IsNullOrEmpty(map.default_scope.type)) return map.default_scope;
+            return new GdaiRoleScope { type = "first_playable", id = null };
+        }
 
         public static bool Exists()
         {

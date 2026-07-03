@@ -79,6 +79,23 @@ namespace GDAI.Bridge.Editor.LayerB
                 string role = entry.role.Trim();
                 try
                 {
+                    // ★ROLE-OVERLAY-V2 · scope 消费规则:仅 project_default / first_playable 可绑;
+                    //   其余 scope = 合法契约但忽略 + 报告(defense in depth,即使导出闸漏过)。
+                    var scope = GdaiSemanticRoleMap.ResolveScope(entry, map);
+                    if (!GdaiSemanticRoleMap.BindingSupportedScopes.Contains(scope.type))
+                    {
+                        unresolved++;
+                        lines.Add($"SKIP  {role}: scope_not_supported_by_binder:{scope.type}");
+                        continue;
+                    }
+                    // ★纵深防御:低置信即使出现在导出里也拒绝绑定(双端闸)。
+                    if (entry.source != null && entry.source.Trim().Equals("inferred_low_confidence", StringComparison.OrdinalIgnoreCase))
+                    {
+                        unresolved++;
+                        lines.Add($"SKIP  {role}: low_confidence_refused_by_binder");
+                        continue;
+                    }
+
                     if (!GdaiSemanticRoleResolver.TryGetEntityIdForRole(role, out string entityId, out string reason))
                     {
                         unresolved++;
@@ -139,12 +156,17 @@ namespace GDAI.Bridge.Editor.LayerB
 
         // ---- scene target resolution (generated component types, Layer C convention) ----
 
+        // ★ROLE-OVERLAY-V2 · role 别名族(与 web SOFT_ROLE_MATRIX aliases 一致):
+        //   player 族: player / player_primary · enemy 族: enemy / default_enemy / enemy_archetype
+        private static readonly HashSet<string> PlayerRoleAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "player", "player_primary" };
+        private static readonly HashSet<string> EnemyRoleAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "enemy", "default_enemy", "enemy_archetype" };
+
         private static List<GameObject> FindTargetsForRole(string role, out string reason)
         {
             reason = null;
             var results = new List<GameObject>();
 
-            if (string.Equals(role, "player", StringComparison.OrdinalIgnoreCase))
+            if (PlayerRoleAliases.Contains(role))
             {
                 var type = ResolveGeneratedType(PlayerComponentType, out reason);
                 if (type == null) return results;
@@ -155,7 +177,7 @@ namespace GDAI.Bridge.Editor.LayerB
                 return results;
             }
 
-            if (string.Equals(role, "enemy", StringComparison.OrdinalIgnoreCase))
+            if (EnemyRoleAliases.Contains(role))
             {
                 var type = ResolveGeneratedType(EnemyComponentType, out reason);
                 if (type == null) return results;
