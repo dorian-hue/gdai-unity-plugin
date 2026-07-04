@@ -69,11 +69,36 @@ namespace GDAI.Bridge.Editor.LayerB
                 if (!GdaiSemanticRoleMap.BindingSupportedScopes.Contains(scope.type))
                 { Fail(row, "scope_not_supported:" + scope.type); rows.Add(row); continue; }
 
-                if (spriteResolver == null || !spriteResolver(entry.entity_id, out string spriteReason))
-                { Fail(row, "sprite_unresolved:" + (spriteResolver == null ? "no_resolver" : spriteReason)); rows.Add(row); continue; }
+                if (spriteResolver == null)
+                {
+                    Fail(row, "sprite_unresolved:no_resolver");
+                    rows.Add(row);
+                    continue;
+                }
 
-                if (targetResolver == null || !targetResolver(row.canonicalRole, out string targetName, out string targetReason))
-                { Fail(row, "target_unresolved:" + (targetResolver == null ? "no_resolver" : targetReason)); rows.Add(row); continue; }
+                string spriteReason;
+                if (!spriteResolver(entry.entity_id, out spriteReason))
+                {
+                    Fail(row, "sprite_unresolved:" + spriteReason);
+                    rows.Add(row);
+                    continue;
+                }
+
+                if (targetResolver == null)
+                {
+                    Fail(row, "target_unresolved:no_resolver");
+                    rows.Add(row);
+                    continue;
+                }
+
+                string targetName;
+                string targetReason;
+                if (!targetResolver(row.canonicalRole, out targetName, out targetReason))
+                {
+                    Fail(row, "target_unresolved:" + targetReason);
+                    rows.Add(row);
+                    continue;
+                }
 
                 row.targetName = targetName;
                 row.bindable = true;
