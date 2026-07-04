@@ -63,6 +63,11 @@ namespace GDAI.Bridge.Editor.LayerB
                        GdaiImportedAssetRegistry.RegistryPath + "). Low-confidence sources never auto-bind.";
             }
 
+            // 0.5 · ★BUILD-4 §9.5 · Preflight 日志(mutate 之前完整照一遍现场)
+            Debug.Log("[GDAI][Assets][SemanticBinding][Preflight] " +
+                      $"mapVersion={map.version} defaultScope={(map.default_scope != null ? map.default_scope.type : "(null→first_playable)")} " +
+                      $"roles={map.roles.Count} registry={(GdaiImportedAssetRegistry.Load() != null ? "present" : "MISSING")}");
+
             // 1 · Contract validation (DEBT-X1 asset-field subset).
             var report = GdaiSemanticRoleResolver.Validate(map);
             foreach (var w in report.Warnings) lines.Add("WARN  " + w);
@@ -128,6 +133,9 @@ namespace GDAI.Bridge.Editor.LayerB
                         }
                         Undo.RecordObject(renderer, "GDAI · Apply semantic sprite binding");
                         renderer.sprite = sprite;
+                        // ★BUILD-4 · RECON 实证:占位方块靠 m_Color tint 上色(Player 蓝 {0.3,0.6,1} /
+                        //   TestEnemy 红)。不重置 tint → 真 sprite 会被染色。重置为 white(Undo 可回滚)。
+                        renderer.color = Color.white;
 
                         var marker = target.GetComponent<GdaiEntitySpriteBinding>();
                         if (marker == null) marker = Undo.AddComponent<GdaiEntitySpriteBinding>(target);
@@ -135,7 +143,7 @@ namespace GDAI.Bridge.Editor.LayerB
                         marker.entityId = entityId;                       // DEBT-M3: stable anchor on the scene object
                         marker.assetId = entry.asset_id;
                         marker.worldEntityName = null;                    // names are not binding data
-                        marker.role = role;
+                        marker.role = CanonicalRole(role);                // BUILD-4 §9.3:canonical(player_primary / enemy_archetype)
 
                         EditorSceneManager.MarkSceneDirty(target.scene);
                         bound++;
@@ -156,12 +164,21 @@ namespace GDAI.Bridge.Editor.LayerB
 
         // ---- scene target resolution (generated component types, Layer C convention) ----
 
-        // ★ROLE-OVERLAY-V2 · role 别名族(与 web SOFT_ROLE_MATRIX aliases 一致):
-        //   player 族: player / player_primary · enemy 族: enemy / default_enemy / enemy_archetype
-        private static readonly HashSet<string> PlayerRoleAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "player", "player_primary" };
+        // ★ROLE-OVERLAY-V2/BUILD-4 · role 别名族(与 web SOFT_ROLE_MATRIX aliases 一致 + BUILD-4 §9.1 追加):
+        //   player 族: player / player_primary / first_playable_player · enemy 族: enemy / default_enemy / enemy_archetype
+        private static readonly HashSet<string> PlayerRoleAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "player", "player_primary", "first_playable_player" };
         private static readonly HashSet<string> EnemyRoleAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "enemy", "default_enemy", "enemy_archetype" };
 
-        private static List<GameObject> FindTargetsForRole(string role, out string reason)
+        /// <summary>BUILD-4 §9.3:canonical role 名(marker/报告统一口径;别名只是输入形态)。</summary>
+        public static string CanonicalRole(string role)
+        {
+            if (PlayerRoleAliases.Contains(role ?? string.Empty)) return "player_primary";
+            if (EnemyRoleAliases.Contains(role ?? string.Empty)) return "enemy_archetype";
+            return role;
+        }
+
+        // BUILD-4:internal 供 GdaiBindingReadiness(dry-run)复用同一套定位契约——绝不双实现。
+        internal static List<GameObject> FindTargetsForRole(string role, out string reason)
         {
             reason = null;
             var results = new List<GameObject>();
