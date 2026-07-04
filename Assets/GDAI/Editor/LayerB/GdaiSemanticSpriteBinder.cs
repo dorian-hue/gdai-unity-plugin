@@ -48,6 +48,7 @@ namespace GDAI.Bridge.Editor.LayerB
         {
             var lines = new List<string>();
             int bound = 0, unresolved = 0;
+            bool runtimePrefabBound = false; // UNITY-BIND-FIX-1 · enemy role's runtime target is the prefab asset
 
             // 0 · Contract present?
             var map = GdaiSemanticRoleMap.Load(out string loadError);
@@ -114,6 +115,34 @@ namespace GDAI.Bridge.Editor.LayerB
                         continue;
                     }
 
+                    // ★UNITY-BIND-FIX-1 · The enemy role's RUNTIME target is EnemyManager.enemyPrefab —
+                    //   Enemy(Clone) is instantiated from it. Binding only the scene TestEnemy was a
+                    //   false-pass (the clone inherits the prefab's Missing Sprite). Bind the prefab
+                    //   ASSET and count it honestly; scene binding below is secondary.
+                    if (CanonicalRole(role) == "enemy_archetype")
+                    {
+                        var pr = GdaiEnemyPrefabBinder.BindEnemyPrefabSprite(
+                            entityId, entry.asset_id, sprite, true, out string prefabPath, out string prefabReason);
+                        switch (pr)
+                        {
+                            case GdaiEnemyPrefabBinder.PrefabBindResult.Bound:
+                                runtimePrefabBound = true; bound++;
+                                lines.Add($"BOUND enemy prefab → entity {Short(entityId)} → {prefabPath}");
+                                break;
+                            case GdaiEnemyPrefabBinder.PrefabBindResult.AlreadyBound:
+                                runtimePrefabBound = true;
+                                lines.Add($"OK    enemy prefab already bound → {prefabPath}");
+                                break;
+                            case GdaiEnemyPrefabBinder.PrefabBindResult.NoRuntimePrefab:
+                                lines.Add($"NOTE  enemy: no runtime prefab to bind ({prefabReason}) — scene binding only");
+                                break;
+                            default: // Failed → a runtime prefab exists but did not bind: NOT a success
+                                unresolved++;
+                                lines.Add($"FAIL  enemy prefab NOT bound ({prefabReason}) — runtime clones keep placeholder");
+                                break;
+                        }
+                    }
+
                     var targets = FindTargetsForRole(role, out string targetReason);
                     if (targets.Count == 0)
                     {
@@ -147,7 +176,7 @@ namespace GDAI.Bridge.Editor.LayerB
 
                         EditorSceneManager.MarkSceneDirty(target.scene);
                         bound++;
-                        lines.Add($"BOUND {role} → entity {Short(entityId)} → '{target.name}'");
+                        lines.Add($"BOUND {role} scene → entity {Short(entityId)} → '{target.name}'");
                     }
                 }
                 catch (Exception e)
@@ -157,9 +186,9 @@ namespace GDAI.Bridge.Editor.LayerB
                 }
             }
 
-            Debug.Log($"[GDAI][Assets][SemanticBinding] bound={bound} unresolved={unresolved}\n" + string.Join("\n", lines));
-            return $"Bound: {bound}\nUnresolved/skipped: {unresolved}\n\n" + string.Join("\n", lines) +
-                   "\n\nScene marked dirty (not saved). Undo supported.";
+            Debug.Log($"[GDAI][Assets][SemanticBinding] bound={bound} unresolved={unresolved} runtimePrefabBound={runtimePrefabBound}\n" + string.Join("\n", lines));
+            return $"Bound: {bound}\nUnresolved/skipped: {unresolved}\nruntimePrefabBound: {runtimePrefabBound}\n\n" + string.Join("\n", lines) +
+                   "\n\nEnemy prefab (if present) written + saved. Scene marked dirty (not saved). Undo covers scene edits; the prefab asset is backed up under .gdai/prefab_backups/.";
         }
 
         // ---- scene target resolution (generated component types, Layer C convention) ----

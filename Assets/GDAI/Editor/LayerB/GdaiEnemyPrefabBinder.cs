@@ -33,6 +33,63 @@ namespace GDAI.Bridge.Editor.LayerB
 
         private enum BindPath { A_BindPrefab, B_NoSpriteRenderer, C_NotPersistent, StopNoTarget }
 
+        /// <summary>
+        /// UNITY-BIND-FIX-1 · Result of the reusable, no-dialog prefab bind used by the semantic
+        /// binder's Apply flow. NoRuntimePrefab = there is nothing to bind (scene object / no
+        /// manager) — legitimate. Failed = a runtime prefab exists but could not be bound → the
+        /// caller MUST count this as unresolved (never a silent scene-only false-pass).
+        /// </summary>
+        public enum PrefabBindResult { Bound, AlreadyBound, NoRuntimePrefab, Failed }
+
+        /// <summary>
+        /// Bind an already-resolved (entityId, assetId, sprite) onto the EnemyManager.enemyPrefab
+        /// asset — no dialogs (for batch use by GdaiSemanticSpriteBinder.Apply). Creates a backup
+        /// before writing. Refuses to run in Play Mode. Never resolves the role/sprite itself.
+        /// </summary>
+        public static PrefabBindResult BindEnemyPrefabSprite(string entityId, string assetId, Sprite sprite,
+            bool makeBackup, out string prefabPath, out string reason)
+        {
+            prefabPath = null; reason = null;
+
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            { reason = "cannot bind prefab during Play Mode — stop Play Mode and re-run"; return PrefabBindResult.Failed; }
+            if (sprite == null) { reason = "enemy sprite unresolved"; return PrefabBindResult.Failed; }
+
+            Type enemyType = FindMonoBehaviourType(EnemyComponentType);
+            if (enemyType == null) { reason = $"'{EnemyComponentType}' type not found"; return PrefabBindResult.NoRuntimePrefab; }
+
+            var comps = GdaiLayerBSceneQuery.FindSceneComponents(enemyType);
+            var managers = comps.Where(HasEnemyPrefabAssigned).ToList();
+            Component manager = managers.Count == 1 ? managers[0]
+                              : managers.FirstOrDefault(c => c.gameObject.name == EnemyManagerName);
+            if (manager == null) { reason = "no EnemyManager with an assigned enemyPrefab"; return PrefabBindResult.NoRuntimePrefab; }
+
+            var so = new SerializedObject(manager);
+            var prop = so.FindProperty("enemyPrefab");
+            var prefabRef = prop != null ? prop.objectReferenceValue as GameObject : null;
+            if (prefabRef == null) { reason = "enemyPrefab not assigned"; return PrefabBindResult.NoRuntimePrefab; }
+            if (!EditorUtility.IsPersistent(prefabRef) || !PrefabUtility.IsPartOfPrefabAsset(prefabRef))
+            { reason = "enemyPrefab is a scene object, not a persistent asset"; return PrefabBindResult.NoRuntimePrefab; }
+
+            prefabPath = AssetDatabase.GetAssetPath(prefabRef);
+            if (string.IsNullOrEmpty(prefabPath)) { reason = "cannot resolve prefab path"; return PrefabBindResult.Failed; }
+            var sr = prefabRef.GetComponentInChildren<SpriteRenderer>(true);
+            if (sr == null) { reason = "prefab has no SpriteRenderer"; return PrefabBindResult.Failed; }
+
+            var existing = sr.GetComponent<GdaiEntitySpriteBinding>();
+            if (sr.sprite == sprite && existing != null && existing.entityId == entityId && existing.role == EnemyCanonicalRole)
+                return PrefabBindResult.AlreadyBound;
+
+            if (makeBackup)
+            {
+                try { Backup(prefabPath); }
+                catch (Exception e) { reason = "backup failed: " + e.Message; return PrefabBindResult.Failed; }
+            }
+            string err = MutateCore(prefabPath, sprite, entityId, assetId);
+            if (err != null) { reason = err; return PrefabBindResult.Failed; }
+            return PrefabBindResult.Bound;
+        }
+
         private sealed class Analysis
         {
             public bool ok;                 // ready to bind (Path A) — everything resolved
@@ -63,6 +120,12 @@ namespace GDAI.Bridge.Editor.LayerB
         [MenuItem("GDAI/Assets · Bind Default Enemy Prefab")]
         public static void BindMenu()
         {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                EditorUtility.DisplayDialog("GDAI · Bind Default Enemy Prefab",
+                    "Stop Play Mode first — prefab assets cannot be edited during Play Mode.", "OK");
+                return;
+            }
             var a = Analyze();
             if (!a.ok)
             {
@@ -204,26 +267,28 @@ namespace GDAI.Bridge.Editor.LayerB
             return $"{BackupRoot}/{ts}/{fileName}";
         }
 
-        private static string Mutate(Analysis a)
+        private static string Mutate(Analysis a) => MutateCore(a.prefabPath, a.sprite, a.entityId, a.assetId);
+
+        private static string MutateCore(string prefabPath, Sprite sprite, string entityId, string assetId)
         {
             GameObject root = null;
             try
             {
-                root = PrefabUtility.LoadPrefabContents(a.prefabPath);
+                root = PrefabUtility.LoadPrefabContents(prefabPath);
                 var sr = root.GetComponentInChildren<SpriteRenderer>(true);
                 if (sr == null) return "SpriteRenderer disappeared on load.";
 
-                sr.sprite = a.sprite;
+                sr.sprite = sprite;
                 sr.color = Color.white; // placeholders are tinted; reset so the real sprite isn't dyed
 
                 var marker = sr.GetComponent<GdaiEntitySpriteBinding>();
                 if (marker == null) marker = sr.gameObject.AddComponent<GdaiEntitySpriteBinding>();
-                marker.entityId = a.entityId;
-                marker.assetId = a.assetId;
+                marker.entityId = entityId;
+                marker.assetId = assetId;
                 marker.worldEntityName = null;      // names are not binding data
                 marker.role = EnemyCanonicalRole;   // canonical, matching the scene binder's convention
 
-                PrefabUtility.SaveAsPrefabAsset(root, a.prefabPath);
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
                 return null;
             }
             catch (Exception e) { return e.Message; }
