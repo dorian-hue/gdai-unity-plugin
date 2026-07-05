@@ -760,6 +760,29 @@ namespace GDAI.Bridge.Editor.LayerA
                 Debug.Log("[GDAI][Assets][RoleMap] " + roleMapMsg);
                 if (wrote) _statusLine += " Role map updated.";
             }
+
+            // ---- UNITY-SCENE-BG-BIND-1 · scene background placement (additive; never fails import) ----
+            // Layer B owns scene mutation (Layer A import never touches the scene). Runs only after a
+            // successful asset import; places/updates the deterministic GDAI_SceneBackground object
+            // behind gameplay (sortingOrder < 0, no collider). Idempotent: re-import updates in place,
+            // never duplicates. Preserves Player/Enemy semantic sprite binding (never touched here).
+            if (import && validated && snap != null &&
+                _status == BundleStatus.RefreshTriggered &&
+                dto != null && dto.assets != null && dto.assets.Count > 0)
+            {
+                try
+                {
+                    bool placed = GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder
+                        .PlaceFromBundle(dto.assets, dto.snapshot_id, out string bgMsg);
+                    Debug.Log("[GDAI][Assets][SceneBackground] " + bgMsg);
+                    if (placed) _statusLine += " Scene background placed.";
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[GDAI][Assets][SceneBackground] placement skipped (import unaffected): " + e.Message);
+                }
+                Repaint();
+            }
         }
 
         // ---- MVP-C actions: device pairing + catalog + production fetch ----
