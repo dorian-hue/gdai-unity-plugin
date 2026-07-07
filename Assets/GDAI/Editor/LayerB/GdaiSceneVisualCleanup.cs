@@ -61,18 +61,31 @@ namespace GDAI.Bridge.Editor.LayerB
                 Undo.DestroyObjectImmediate(go);
             }
 
-            // 2 · imported-asset preview root (preview only — gameplay objects untouched).
+            // 2 · imported-asset preview root — ★1E-FIX: NOT always noise. In the current validation
+            //     scene it holds the ONLY visible character sprites (GDAI_Sprite_Kuro/Lyra), so it must
+            //     be preserved. Remove ONLY if real bound entity visuals exist OUTSIDE the preview root.
             var preview = GameObject.Find(ImportedAssetPreviewName);
-            if (preview != null && !IsProtected(preview.name))
+            string previewNote;
+            if (preview == null)
+            {
+                previewNote = "GDAI_ImportedAssetPreview: not present.";
+            }
+            else if (!IsProtected(preview.name) && HasNonPreviewEntityVisuals(preview))
             {
                 removed.Add(preview.name);
                 Undo.DestroyObjectImmediate(preview);
+                previewNote = "GDAI_ImportedAssetPreview: removed (real bound entity visuals exist outside the preview root).";
+            }
+            else
+            {
+                previewNote = "Kept GDAI_ImportedAssetPreview because it is currently the only visible entity preview.";
             }
 
             if (removed.Count > 0) EditorSceneManager.MarkSceneDirty(scene);
 
             string msg = "Removed " + removed.Count + " old demo object(s)." +
-                         (removed.Count > 0 ? "\n  · " + string.Join("\n  · ", removed) : " (nothing to clean)") +
+                         (removed.Count > 0 ? "\n  · " + string.Join("\n  · ", removed) : " (no demo obstacles to clean)") +
+                         "\n" + previewNote +
                          "\nProtected (untouched): GDAI_SceneAssembly / GDAI_SceneElement_* / GDAI_SceneBackground / Player / EnemyManager / ..." +
                          "\nScene marked dirty (not saved).";
             Debug.Log("[GDAI][Scene][Cleanup] " + msg);
@@ -85,6 +98,23 @@ namespace GDAI.Bridge.Editor.LayerB
             if (Protected.Contains(name)) return true;
             if (name == "GDAI_SceneAssembly") return true;
             if (name.StartsWith("GDAI_SceneElement_")) return true;   // never delete real 1D scene elements
+            return false;
+        }
+
+        // ★1E-FIX · True only if a REAL bound entity visual exists OUTSIDE the preview root:
+        // a GdaiEntitySpriteBinding (added by the binding tools) with an assigned sprite, not under
+        // the preview. Errs toward KEEP — if no such external visual exists, the preview root is the
+        // only character view and is preserved (this is the bug 1E-FIX addresses).
+        private static bool HasNonPreviewEntityVisuals(GameObject previewRoot)
+        {
+            Transform previewT = previewRoot != null ? previewRoot.transform : null;
+            foreach (var b in Object.FindObjectsByType<GdaiEntitySpriteBinding>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (b == null) continue;
+                if (previewT != null && b.transform.IsChildOf(previewT)) continue;   // skip the preview's own bindings
+                var sr = b.GetComponent<SpriteRenderer>();
+                if (sr != null && sr.sprite != null) return true;
+            }
             return false;
         }
     }
