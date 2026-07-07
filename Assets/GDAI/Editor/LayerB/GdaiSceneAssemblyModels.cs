@@ -82,11 +82,21 @@ namespace GDAI.Bridge.Editor.LayerB
     public class PhysicsDto
     {
         public string kind;              // "demo_draft_blocker" | ...
-        public string shape;             // "box"
+        public string shape;             // "box" | "polygon"
         public float w;
         public float h;
         public bool confirmed;           // false = demo draft (Unity builds draft collider); NEVER promoted to true here
+
+        // ── 1F/1G forward-compat GDAI collision metadata (unknown ignored; old bundles → defaults) ──
+        public string collider_mode;     // "box" | "polygon"
+        public string source;            // e.g. "auto_alpha_bounds"
+        public int version;
+        public float offset_x;           // collider offset in canvas px (top-left origin, y-down)
+        public float offset_y;
+        public List<ColliderPointDto> points;   // polygon points (canvas px); consumed once 1G point-mapping is confirmed
     }
+
+    [Serializable] public class ColliderPointDto { public float x; public float y; }
 
     [Serializable] public class ArenaDto { public float width; public float height; public string source; }
 
