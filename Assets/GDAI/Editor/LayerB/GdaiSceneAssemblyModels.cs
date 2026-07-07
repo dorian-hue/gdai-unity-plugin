@@ -56,7 +56,36 @@ namespace GDAI.Bridge.Editor.LayerB
         public List<PlacementDto> placements;
         public List<SpawnDto> spawns;
         public List<BlockerDto> default_blockers;
+        public List<SceneElementDto> scene_elements;   // A3-BUILD-1C · explicit props/obstacles/occluders
         public List<DiagnosticDto> diagnostics;
+    }
+
+    // ── UNITY-CONSUME-SCENE-ELEMENTS-1D · scene_layouts.scene_elements projection ──
+    // Mirrors sceneAssembly.ts SceneAssemblySceneElement. Physically separate from placements;
+    // resolves its own sprite via assetManifest role=scene_element (join on asset_id).
+    [Serializable]
+    public class SceneElementDto
+    {
+        public string id;
+        public string asset_id;          // = visual_assets row id; joins assetManifest scene_element entry
+        public string storage_path;
+        public string role;              // "obstacle" | "occluder" | "prop" | ...
+        public float x;
+        public float y;
+        public float scale;
+        public int z_index;
+        public PhysicsDto physics;       // may be null
+        public string source;            // "scene_layouts.scene_elements"
+    }
+
+    [Serializable]
+    public class PhysicsDto
+    {
+        public string kind;              // "demo_draft_blocker" | ...
+        public string shape;             // "box"
+        public float w;
+        public float h;
+        public bool confirmed;           // false = demo draft (Unity builds draft collider); NEVER promoted to true here
     }
 
     [Serializable] public class ArenaDto { public float width; public float height; public string source; }

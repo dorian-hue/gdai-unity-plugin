@@ -52,5 +52,6 @@ namespace GDAI.Bridge
         public const string ArenaBounds = "arena_bounds";
         public const string Blocker = "blocker";
         public const string DemoObstacle = "demo_obstacle";   // C5 · Unity-local demo-draft, NOT Flowcraft SSOT
+        public const string SceneElement = "scene_element";   // 1D · explicit Flowcraft scene_layouts.scene_elements
     }
 }
