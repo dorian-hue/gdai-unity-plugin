@@ -140,40 +140,45 @@ namespace GDAI.Bridge.Editor.LayerB
         /// </summary>
         private static bool ApplyDraftCollider(GameObject go, SceneElementDto e, Sprite sprite)
         {
-            var box = go.GetComponent<BoxCollider2D>();
-            var poly = go.GetComponent<PolygonCollider2D>();
-
             bool wantBlocker = e.physics != null && e.physics.kind == DraftBlockerKind && !e.physics.confirmed;
             if (!wantBlocker)
             {
-                if (box != null) Undo.DestroyObjectImmediate(box);
-                if (poly != null) Undo.DestroyObjectImmediate(poly);
+                RemoveAll<BoxCollider2D>(go);
+                RemoveAll<PolygonCollider2D>(go);
                 return false;
             }
 
             var p = e.physics;
 
-            // A · metadata polygon — recognized but NOT faked (point→local mapping pending 1G spec).
-            if ((p.collider_mode == "polygon" || p.shape == "polygon") && p.points != null && p.points.Count >= 3)
+            // ★1F1 · only trust metadata carrying NEW GDAI 1G collision fields. Legacy source-less w/h
+            //        (e.g. 80×80 → 0.8) is a hint, NOT SSOT → never build a metadata box from it.
+            bool trustedMeta = !string.IsNullOrEmpty(p.collider_mode) || !string.IsNullOrEmpty(p.source) || p.version > 0;
+
+            // A · trusted metadata polygon — recognized but NOT faked (point→local mapping pending 1G spec).
+            if (trustedMeta && (p.collider_mode == "polygon" || p.shape == "polygon") && p.points != null && p.points.Count >= 3)
                 Debug.Log("[GDAI][Scene][SceneElements] element '" + e.id + "' carries polygon collider metadata (" +
                           p.points.Count + " pts); point→local mapping pending GDAI 1G spec — using sprite-fit fallback for now.");
 
-            // B · metadata box (e.g. auto_alpha_bounds). Canvas px → local world units.
-            if (p.w > 0f && p.h > 0f)
+            // B · trusted metadata box (new GDAI 1G collision metadata, e.g. auto_alpha_bounds).
+            if (trustedMeta && p.w > 0f && p.h > 0f)
             {
-                if (poly != null) Undo.DestroyObjectImmediate(poly);
-                if (box == null) box = Undo.AddComponent<BoxCollider2D>(go);
+                RemoveAll<PolygonCollider2D>(go);
+                var box = EnsureSingle<BoxCollider2D>(go);
                 Undo.RecordObject(box, "GDAI · scene element box collider (metadata)");
                 box.isTrigger = false;
                 box.size = GdaiSceneAssemblyCoordinateUtility.CanvasSizeToWorld(p.w, p.h);
                 box.offset = new Vector2(p.offset_x / GdaiSceneAssemblyCoordinateUtility.PpuWorld,
                                          -p.offset_y / GdaiSceneAssemblyCoordinateUtility.PpuWorld);
+                Debug.Log("[GDAI][Scene][SceneElements] collider mode: metadata_box · element '" + e.id + "'.");
                 return true;
             }
 
-            // C · sprite physics shape → PolygonCollider2D (tight fit to the visible sprite).
-            if (sprite != null && TryBuildSpriteShapePolygon(go, sprite, box))
+            // C · sprite physics shape → PolygonCollider2D (tight fit; removes ALL stale boxes).
+            if (sprite != null && TryBuildSpriteShapePolygon(go, sprite))
+            {
+                Debug.Log("[GDAI][Scene][SceneElements] collider mode: sprite_polygon · element '" + e.id + "'.");
                 return true;
+            }
 
             // D · sprite bounds box (covers the visible image; center offset handles non-center pivot).
             if (sprite != null)
@@ -181,25 +186,26 @@ namespace GDAI.Bridge.Editor.LayerB
                 Vector3 b = sprite.bounds.size;
                 if (b.x > 1e-3f && b.y > 1e-3f)
                 {
-                    if (poly != null) Undo.DestroyObjectImmediate(poly);
-                    if (box == null) box = Undo.AddComponent<BoxCollider2D>(go);
+                    RemoveAll<PolygonCollider2D>(go);
+                    var box = EnsureSingle<BoxCollider2D>(go);
                     Undo.RecordObject(box, "GDAI · scene element sprite-bounds collider");
                     box.isTrigger = false;
                     Vector3 c = sprite.bounds.center;
                     box.size = new Vector2(b.x, b.y);
                     box.offset = new Vector2(c.x, c.y);
+                    Debug.Log("[GDAI][Scene][SceneElements] collider mode: sprite_bounds_box · element '" + e.id + "'.");
                     return true;
                 }
             }
 
-            // E · last fallback: 0.8×0.8 (no metadata, no usable sprite).
-            if (poly != null) Undo.DestroyObjectImmediate(poly);
-            if (box == null) box = Undo.AddComponent<BoxCollider2D>(go);
-            Undo.RecordObject(box, "GDAI · scene element fallback collider");
-            box.isTrigger = false;
-            box.offset = Vector2.zero;
-            box.size = new Vector2(FallbackColliderWorldSize, FallbackColliderWorldSize);
-            Debug.LogWarning("[GDAI][Scene][SceneElements] fallback collider used: no metadata/no sprite for element '" + e.id + "'.");
+            // E · last fallback: 0.8×0.8 (no trusted metadata, no usable sprite).
+            RemoveAll<PolygonCollider2D>(go);
+            var fb = EnsureSingle<BoxCollider2D>(go);
+            Undo.RecordObject(fb, "GDAI · scene element fallback collider");
+            fb.isTrigger = false;
+            fb.offset = Vector2.zero;
+            fb.size = new Vector2(FallbackColliderWorldSize, FallbackColliderWorldSize);
+            Debug.LogWarning("[GDAI][Scene][SceneElements] collider mode: fallback_0_8 · no trusted metadata/no sprite for element '" + e.id + "'.");
             return true;
         }
 
@@ -208,21 +214,38 @@ namespace GDAI.Bridge.Editor.LayerB
         /// the object, consistent with the 1E visual scale). False if the sprite has no usable shape
         /// (&lt;3 points). Removes a stale BoxCollider2D on success.
         /// </summary>
-        private static bool TryBuildSpriteShapePolygon(GameObject go, Sprite sprite, BoxCollider2D staleBox)
+        private static bool TryBuildSpriteShapePolygon(GameObject go, Sprite sprite)
         {
             if (sprite.GetPhysicsShapeCount() <= 0) return false;
             var pts = new List<Vector2>();
             sprite.GetPhysicsShape(0, pts);
             if (pts.Count < 3) return false;
 
-            if (staleBox != null) Undo.DestroyObjectImmediate(staleBox);
-            var poly = go.GetComponent<PolygonCollider2D>();
-            if (poly == null) poly = Undo.AddComponent<PolygonCollider2D>(go);
+            RemoveAll<BoxCollider2D>(go);   // polygon chosen → remove ALL stale boxes (incl legacy 0.8)
+            var poly = EnsureSingle<PolygonCollider2D>(go);
             Undo.RecordObject(poly, "GDAI · scene element sprite-shape collider");
             poly.isTrigger = false;
             poly.pathCount = 1;
             poly.SetPath(0, pts);
             return true;
+        }
+
+        /// <summary>Remove ALL components of type T (Undo-registered). Ensures no stale collider lingers.</summary>
+        private static void RemoveAll<T>(GameObject go) where T : Component
+        {
+            var comps = go.GetComponents<T>();
+            for (int i = 0; i < comps.Length; i++)
+                if (comps[i] != null) Undo.DestroyObjectImmediate(comps[i]);
+        }
+
+        /// <summary>Return a single T on the object: drops any duplicates, adds one if none exists.</summary>
+        private static T EnsureSingle<T>(GameObject go) where T : Component
+        {
+            var comps = go.GetComponents<T>();
+            if (comps.Length == 0) return Undo.AddComponent<T>(go);
+            for (int i = 1; i < comps.Length; i++)
+                if (comps[i] != null) Undo.DestroyObjectImmediate(comps[i]);
+            return comps[0];
         }
 
         /// <summary>

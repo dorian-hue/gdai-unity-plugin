@@ -61,25 +61,13 @@ namespace GDAI.Bridge.Editor.LayerB
                 Undo.DestroyObjectImmediate(go);
             }
 
-            // 2 · imported-asset preview root — ★1E-FIX: NOT always noise. In the current validation
-            //     scene it holds the ONLY visible character sprites (GDAI_Sprite_Kuro/Lyra), so it must
-            //     be preserved. Remove ONLY if real bound entity visuals exist OUTSIDE the preview root.
+            // 2 · imported-asset preview root — ★1F1: NEVER delete during current scene closure. It holds
+            //     the visible character preview sprites (Kuro/Lyra/Tri-Soul). Preview cleanup is deferred
+            //     until entity visuals are owned by real scene placements.
             var preview = GameObject.Find(ImportedAssetPreviewName);
-            string previewNote;
-            if (preview == null)
-            {
-                previewNote = "GDAI_ImportedAssetPreview: not present.";
-            }
-            else if (!IsProtected(preview.name) && HasNonPreviewEntityVisuals(preview))
-            {
-                removed.Add(preview.name);
-                Undo.DestroyObjectImmediate(preview);
-                previewNote = "GDAI_ImportedAssetPreview: removed (real bound entity visuals exist outside the preview root).";
-            }
-            else
-            {
-                previewNote = "Kept GDAI_ImportedAssetPreview because it is currently the only visible entity preview.";
-            }
+            string previewNote = preview == null
+                ? "GDAI_ImportedAssetPreview: not present."
+                : "Kept GDAI_ImportedAssetPreview for current demo scene; preview cleanup is deferred until entity visuals are owned by real scene placements.";
 
             if (removed.Count > 0) EditorSceneManager.MarkSceneDirty(scene);
 
@@ -101,21 +89,5 @@ namespace GDAI.Bridge.Editor.LayerB
             return false;
         }
 
-        // ★1E-FIX · True only if a REAL bound entity visual exists OUTSIDE the preview root:
-        // a GdaiEntitySpriteBinding (added by the binding tools) with an assigned sprite, not under
-        // the preview. Errs toward KEEP — if no such external visual exists, the preview root is the
-        // only character view and is preserved (this is the bug 1E-FIX addresses).
-        private static bool HasNonPreviewEntityVisuals(GameObject previewRoot)
-        {
-            Transform previewT = previewRoot != null ? previewRoot.transform : null;
-            foreach (var b in Object.FindObjectsByType<GdaiEntitySpriteBinding>(FindObjectsInactive.Include, FindObjectsSortMode.None))
-            {
-                if (b == null) continue;
-                if (previewT != null && b.transform.IsChildOf(previewT)) continue;   // skip the preview's own bindings
-                var sr = b.GetComponent<SpriteRenderer>();
-                if (sr != null && sr.sprite != null) return true;
-            }
-            return false;
-        }
     }
 }
