@@ -35,6 +35,12 @@ namespace GDAI.Bridge.Editor.LayerB
         private const float FallbackColliderWorldSize = 0.8f;
         private static readonly string[] ImageExts = { ".png", ".jpg", ".jpeg", ".webp" };
 
+        // ── UNITY-SCENE-VISUAL-CLEANUP-1E · demo visual guards (Unity transform.localScale /
+        //    SpriteRenderer.sortingOrder ONLY; NEVER written back to the bundle / scene_layouts) ──
+        private const float DemoMinScale = 0.35f;
+        private const float DemoMaxScale = 1.15f;
+        private const int SceneElementSortingBase = -20;   // keep behind Player/Enemy(0), above background(-100)
+
         [MenuItem("GDAI/Scene · Place Scene Elements")]
         public static void PlaceSceneElementsMenu()
         {
@@ -77,7 +83,10 @@ namespace GDAI.Bridge.Editor.LayerB
                 Undo.RecordObject(go.transform, "GDAI · position scene element");
                 go.transform.position = GdaiSceneAssemblyCoordinateUtility.CanvasToWorld(e.x, e.y, dto.arena.width, dto.arena.height);
                 go.transform.rotation = Quaternion.identity;
-                float s = e.scale > 0f ? e.scale : 1f;
+                // 1E demo visual clamp: bundle scale can be oversize (web placement value); clamp for
+                // demo presentability ONLY — bundle/scene_layouts unchanged, never written back.
+                float rawScale = e.scale > 0f ? e.scale : 1f;
+                float s = Mathf.Clamp(rawScale, DemoMinScale, DemoMaxScale);
                 go.transform.localScale = new Vector3(s, s, 1f);
 
                 // Sprite: locate the already-imported Art/ PNG by asset_id id8.
@@ -93,7 +102,9 @@ namespace GDAI.Bridge.Editor.LayerB
                     sr.sprite = sprite;                 // do NOT mutate the imported sprite asset
                     sr.color = Color.white;
                     sr.sortingLayerName = "Default";
-                    sr.sortingOrder = e.z_index;        // z-index from scene_elements
+                    // 1E: keep scene elements behind Player/Enemy (order 0) so characters stay visible,
+                    // above background (-100); preserve z_index relative ordering among elements.
+                    sr.sortingOrder = Mathf.Clamp(SceneElementSortingBase + e.z_index, -90, -1);
                     withSprite++;
                 }
                 else
