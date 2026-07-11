@@ -18,6 +18,12 @@
   no UserSettings, no local `file:` deps, package-vs-telemetry version match,
   Layer completeness). Run before every tag.
 
+### Fixed (P4A)
+- Preserve the `Resources/GDAI/UI` package directory used by UI metadata import and
+  runtime lookup: ship `.gitkeep` inside it so the tracked folder (and its existing
+  `UI.meta` GUID) survives git packaging; clean installs no longer emit the
+  empty-folder orphan-meta warning.
+
 ### Known
 - `Assets/GDAI/Resources/GDAI/UI.meta` tracks an empty folder (guid
   `ceeda8d9ce00d4c348879c25425c3917`); Unity recreates the folder on import.
