@@ -65,6 +65,13 @@ namespace GDAI.Bridge.Editor.LayerA
         private bool _connecting;
         private bool _cancelPoll;
 
+        // ---- AUTO-0N P1 · bound-project binding (fail closed) ----
+        private GdaiProjectBindingData _binding;          // valid binding or null
+        private bool _bindingFilePresent;
+        private string _bindingError = "";
+        private GdaiBindingState _bindingState = GdaiBindingState.Unpaired;
+        private bool IsBound => _binding != null;
+
         private List<GdaiCatalogProject> _projects = new List<GdaiCatalogProject>();
         private int _projIndex;
         private List<GdaiCatalogBundle> _bundles = new List<GdaiCatalogBundle>();
@@ -144,6 +151,50 @@ namespace GDAI.Bridge.Editor.LayerA
             _pluginToken = EditorPrefs.GetString(PrefPluginToken, "");   // scoped token persists (revocable)
             _selProjectId = EditorPrefs.GetString(PrefSelProject, "");
             _selSnapshot = EditorPrefs.GetString(PrefSelSnapshot, "");
+
+            // AUTO-0N P1: read the exported-project binding (file read only —
+            // no network, no asset writes, no auto-apply on open).
+            LoadBindingFileOnly();
+        }
+
+        private void LoadBindingFileOnly()
+        {
+            _binding = null; _bindingError = "";
+            bool ok = GdaiProjectBinding.TryLoad(
+                GdaiProjectBinding.DefaultProjectRoot(), PluginVersion,
+                Application.unityVersion, out var data, out var err, out _bindingFilePresent);
+            if (ok) { _binding = data; }
+            else if (_bindingFilePresent) { _bindingError = err; }
+            RecomputeBindingState(catalogChecked: false, inCatalog: false);
+        }
+
+        // State ladder: UNPAIRED → PAIRED_BINDING_UNAVAILABLE/UNAUTHORIZED → PAIRED_BOUND_READY.
+        private void RecomputeBindingState(bool catalogChecked, bool inCatalog)
+        {
+            if (_bindingState == GdaiBindingState.Syncing) return; // sync owns transitions
+            if (!IsConnected) { _bindingState = GdaiBindingState.Unpaired; return; }
+            if (_bindingFilePresent && _binding == null)
+            { _bindingState = GdaiBindingState.PairedBindingUnavailable; return; }
+            if (!_bindingFilePresent) { _bindingState = GdaiBindingState.Unpaired; return; }
+            if (!catalogChecked) { _bindingState = GdaiBindingState.PairedBindingUnavailable; return; }
+            _bindingState = inCatalog
+                ? GdaiBindingState.PairedBoundReady
+                : GdaiBindingState.PairedBindingUnauthorized;
+        }
+
+        // Central bound-project assertion: every fetch/sync entry calls this
+        // BEFORE any network/import. Mismatch fails closed.
+        private bool AssertBoundProjectOrFail()
+        {
+            if (!IsBound) return true; // legacy unbound project keeps old behavior
+            if (string.IsNullOrEmpty(_selProjectId) || _selProjectId != _binding.project_id)
+            {
+                SetStatus(BundleStatus.FailedValidation,
+                    "Bound project mismatch: this exported project is bound to " +
+                    _binding.project_id + ". Import is blocked (fail closed).");
+                return false;
+            }
+            return true;
         }
 
         private bool IsConnected => !string.IsNullOrEmpty(_pluginToken);
@@ -266,6 +317,17 @@ namespace GDAI.Bridge.Editor.LayerA
                         EditorGUILayout.LabelField(IsConnected
                             ? "No authorized projects. Reconnect and authorize a project in your browser."
                             : "Connect first.");
+                    }
+                    else if (IsBound)
+                    {
+                        // AUTO-0N P1: bound mode — identity is read-only, no free
+                        // project switching, never fall back to another project.
+                        EditorGUILayout.LabelField(
+                            string.IsNullOrEmpty(_binding.project_display_name)
+                                ? _binding.project_id
+                                : _binding.project_display_name + " (" + Short(_binding.project_id) + "…)",
+                            EditorStyles.boldLabel);
+                        EditorGUILayout.LabelField("Bound", _bindingState.ToString());
                     }
                     else
                     {
@@ -875,20 +937,51 @@ namespace GDAI.Bridge.Editor.LayerA
             try
             {
                 _projects = await GdaiPluginCatalogClient.ListProjects(_functionsBase.Trim(), _pluginToken);
-                _projIndex = 0;
-                if (!string.IsNullOrEmpty(_selProjectId))
+                if (IsBound)
                 {
-                    int idx = _projects.FindIndex(p => p.project_id == _selProjectId);
-                    if (idx >= 0) _projIndex = idx;
+                    // AUTO-0N P1: bound mode — the binding project must be in the
+                    // approved catalog. Absent → PAIRED_BINDING_UNAUTHORIZED and
+                    // NO selection (never project[0], never overwrite binding,
+                    // never clear the token here).
+                    var ids = _projects.ConvertAll(p => p.project_id);
+                    bool inCatalog = GdaiProjectBinding.TryResolveCatalogIndex(
+                        _binding.project_id, ids, out int boundIdx);
+                    if (inCatalog)
+                    {
+                        _projIndex = boundIdx;
+                        _selProjectId = _projects[boundIdx].project_id;
+                        _selProjectName = _projects[boundIdx].name;
+                        EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                        RecomputeBindingState(catalogChecked: true, inCatalog: true);
+                        SetStatus(_status, $"Bound project authorized · {_projects.Count} project(s) in catalog.");
+                        await LoadBundlesInternal();
+                    }
+                    else
+                    {
+                        _selProjectId = ""; _selProjectName = "";
+                        RecomputeBindingState(catalogChecked: true, inCatalog: false);
+                        SetStatus(BundleStatus.FailedValidation,
+                            "Bound project is not authorized for this connection (fail closed). " +
+                            "Approve it in the browser pairing, then Refresh Projects.");
+                    }
                 }
-                if (_projects.Count > 0)
+                else
                 {
-                    _selProjectId = _projects[_projIndex].project_id;
-                    _selProjectName = _projects[_projIndex].name;
-                    EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                    _projIndex = 0;
+                    if (!string.IsNullOrEmpty(_selProjectId))
+                    {
+                        int idx = _projects.FindIndex(p => p.project_id == _selProjectId);
+                        if (idx >= 0) _projIndex = idx;
+                    }
+                    if (_projects.Count > 0)
+                    {
+                        _selProjectId = _projects[_projIndex].project_id;
+                        _selProjectName = _projects[_projIndex].name;
+                        EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                    }
+                    SetStatus(_status, $"Loaded {_projects.Count} project(s).");
+                    if (_projects.Count > 0) await LoadBundlesInternal();
                 }
-                SetStatus(_status, $"Loaded {_projects.Count} project(s).");
-                if (_projects.Count > 0) await LoadBundlesInternal();
             }
             catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
             catch (Exception e)
@@ -927,6 +1020,7 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             if (!IsConnected) { SetStatus(BundleStatus.FailedValidation, "Not connected. Connect to GDAI first."); return; }
             if (string.IsNullOrEmpty(_selProjectId)) { SetStatus(BundleStatus.FailedValidation, "Select a project first."); return; }
+            if (!AssertBoundProjectOrFail()) return; // AUTO-0N P1: fail closed before network/import
             string snapshotId = "";
             if (!latest)
             {
