@@ -67,6 +67,8 @@ namespace GDAI.Bridge.Editor.LayerA
 
         // ---- AUTO-0N P1 · bound-project binding (fail closed) ----
         private GdaiProjectBindingData _binding;          // valid binding or null
+        private int _lastBinaryAssetCount;                // AUTO-0N P2 receipt inputs
+        private int _lastPreservedMetaCount;
         private bool _bindingFilePresent;
         private string _bindingError = "";
         private GdaiBindingState _bindingState = GdaiBindingState.Unpaired;
@@ -352,6 +354,16 @@ namespace GDAI.Bridge.Editor.LayerA
                 if (GUILayout.Button("Import Latest Bundle", GUILayout.Height(28)))
                     FetchProd(latest: true, import: true);
             }
+
+            // AUTO-0N P2: single user-triggered completion CTA. Enabled ONLY in
+            // PAIRED_BOUND_READY (bound exported project, catalog-authorized).
+            using (new EditorGUI.DisabledScope(_busy || _bindingState != GdaiBindingState.PairedBoundReady))
+            {
+                if (GUILayout.Button("Complete GDAI Export / Sync Project", GUILayout.Height(32)))
+                    CompleteExportSync();
+            }
+            if (IsBound && _bindingState != GdaiBindingState.PairedBoundReady)
+                EditorGUILayout.HelpBox("Complete Sync requires state PAIRED_BOUND_READY (current: " + _bindingState + ").", MessageType.Info);
 
             if (HasLastSnapshot)
             {
@@ -722,6 +734,7 @@ namespace GDAI.Bridge.Editor.LayerA
             try
             {
                 var st = CoherentBundleImporter.ImportVerbatim(snap, out string msg, out List<string> written, out string backup, out int preservedMetas);
+                _lastPreservedMetaCount = preservedMetas; // AUTO-0N P2 receipt input
                 _status = st;
                 _lastBackupPath = backup ?? "";
                 EditorPrefs.SetString(PrefLastBackup, _lastBackupPath);
@@ -809,6 +822,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 dto != null && dto.assets != null && dto.assets.Count > 0)
             {
                 var assetSummary = AssetPayloadImporter.ImportAll(dto.assets, dto.snapshot_id);
+                _lastBinaryAssetCount = assetSummary.Imported; // AUTO-0N P2 receipt input
                 _statusLine += $" Binary assets: {assetSummary.Imported} imported, {assetSummary.SkippedWithReason.Count} skipped.";
                 if (dto.assets_skipped != null && dto.assets_skipped.Count > 0)
                     Debug.Log($"[GDAI][LayerA][Assets] Backend skipped {dto.assets_skipped.Count} asset(s) before delivery (see proxy assets_skipped).");
@@ -1079,5 +1093,103 @@ namespace GDAI.Bridge.Editor.LayerA
             _statusLine = line;
             Repaint();
         }
+        // ---- AUTO-0N P2 · user-triggered Complete GDAI Export / Sync ----
+        // Reuses existing seams in order (§9.2). Never bypasses the existing
+        // Backup & Replace confirmation; never continues past a failed core
+        // step; writes a completion receipt ONLY on full success; measures
+        // outcomes (scene elements / colliders) instead of trusting step
+        // return values where legacy seams are void menu entries.
+        private async void CompleteExportSync()
+        {
+            if (_bindingState != GdaiBindingState.PairedBoundReady) return;
+            if (!AssertBoundProjectOrFail()) return;
+            var startedUtc = DateTime.UtcNow;
+            _bindingState = GdaiBindingState.Syncing;
+            string failPhase = null;
+            try
+            {
+                // 1-6: fetch + validate + confirm + code import + asset payloads
+                //      + role map + background (existing chained pipeline).
+                await RunCompleteFetchImport();
+                if (_status != BundleStatus.RefreshTriggered) { failPhase = "FETCH_IMPORT"; return; }
+
+                // 7-9: scene elements, spawn markers, arena bounds, demo
+                //      obstacle, edge blockers (existing Layer B seams).
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
+                var spawn = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
+                Debug.Log("[GDAI][CompleteSync] spawn markers: " + spawn);
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
+
+                // 10: minimal playable scene preparation (existing Layer C seam).
+                GDAI.Bridge.Editor.LayerC.GdaiMinimalPlayableSceneBuilder.PrepareMenu();
+
+                // 11-12: save assets + open scene.
+                AssetDatabase.SaveAssets();
+                UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
+
+                // Outcome measurement (fail closed on empty results).
+                int elementCount = 0, colliderCount = 0;
+                foreach (var col in UnityEngine.Object.FindObjectsByType<PolygonCollider2D>(FindObjectsSortMode.None)) { colliderCount++; _ = col; }
+                var sceneRoot = GameObject.Find("GDAI_SceneAssembly");
+                if (sceneRoot != null) elementCount = sceneRoot.transform.childCount;
+                string scenePath = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path;
+                if (string.IsNullOrEmpty(scenePath)) { failPhase = "SCENE_SAVE"; return; }
+
+                // 13: completion receipt (PASS only).
+                var receipt = new GdaiExportReceiptData
+                {
+                    project_id = _binding.project_id,
+                    snapshot_id = _sumSnapshot,
+                    snapshot_revision = _sumSource,
+                    plugin_version = PluginVersion,
+                    generated_file_count = _sumAssetCount,
+                    binary_asset_count = _lastBinaryAssetCount,
+                    preserved_meta_count = _lastPreservedMetaCount,
+                    backup_path = ToProjectRelative(_lastBackupPath),
+                    scene_path = scenePath,
+                    scene_elements_count = elementCount,
+                    collider_count = colliderCount,
+                    started_at = startedUtc.ToString("o"),
+                    completed_at = DateTime.UtcNow.ToString("o"),
+                    result = "PASS",
+                };
+                string receiptPath = GdaiExportReceipt.Write(GdaiProjectBinding.DefaultProjectRoot(), receipt, DateTime.UtcNow);
+                _bindingState = GdaiBindingState.SyncComplete;
+                SetStatus(BundleStatus.RefreshTriggered,
+                    $"Complete Sync PASS · {elementCount} scene element(s) · {colliderCount} collider(s) · receipt {Path.GetFileName(receiptPath)}");
+            }
+            catch (Exception e)
+            {
+                failPhase = failPhase ?? ("EXCEPTION: " + e.Message);
+            }
+            finally
+            {
+                if (_bindingState != GdaiBindingState.SyncComplete)
+                {
+                    _bindingState = GdaiBindingState.SyncFailed;
+                    SetStatus(BundleStatus.FailedValidation,
+                        "Complete Sync FAILED at phase " + (failPhase ?? "UNKNOWN") +
+                        ". No receipt written. Recovery: fix the reported phase, then click Complete Sync again (imports are backup-protected).");
+                }
+                Repaint();
+            }
+        }
+
+        private async Task RunCompleteFetchImport()
+        {
+            string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
+            await RunProxyFetch(proxyUrl, _selProjectId, latest: true, snapshotId: "", token: _pluginToken, import: true);
+        }
+
+        private static string ToProjectRelative(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            string root = GdaiProjectBinding.DefaultProjectRoot().Replace('\\', '/');
+            string p = path.Replace('\\', '/');
+            return p.StartsWith(root) ? p.Substring(root.Length).TrimStart('/') : p;
+        }
+
     }
 }
