@@ -1,3 +1,15 @@
+## v0.1.0-alpha.8.5 (2026-07-12)
+
+- Fail-closed GDAI project binding: exported projects carry
+  `ProjectSettings/GDAIProjectBinding.json`; the connector window locks to the
+  bound project (read-only identity, no catalog fallback, mismatch blocks all
+  fetch/import before network).
+- User-triggered `Complete GDAI Export / Sync Project` CTA orchestrating the
+  existing import/asset/role-map/background pipeline plus Layer B scene
+  elements/spawn/arena/obstacle/edge blockers and Layer C minimal playable
+  scene prep, with a PASS-only completion receipt under `.gdai/receipts/`.
+- New Editor test assembly `GDAI.Editor.Tests` (19 EditMode tests).
+
 # Changelog
 
 ## [0.1.0-alpha.8.4] - 2026-07-11

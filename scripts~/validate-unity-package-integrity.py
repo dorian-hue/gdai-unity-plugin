@@ -116,6 +116,15 @@ def main():
         check(pkg.get("version") == m.group(1), "version.packageEqualsTelemetry",
               f"package={pkg.get('version')} telemetry={m.group(1)}")
 
+    # 7b. AUTO-0N required export/binding files (8.5 release contract)
+    for req in ("Assets/GDAI/Editor/LayerA/GdaiProjectBinding.cs",
+                "Assets/GDAI/Editor/LayerA/GdaiExportReceipt.cs",
+                "Assets/GDAI/Tests/Editor/GDAI.Editor.Tests.asmdef",
+                "Assets/GDAI/Tests/Editor/GdaiProjectBindingTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiBoundStateTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiExportReceiptTests.cs"):
+        check(req in tracked, f"required.{req.rsplit('/',1)[1]}")
+
     # 7. layer completeness
     for name, prefix in (("LayerA", "Assets/GDAI/Editor/LayerA/"),
                          ("LayerB", "Assets/GDAI/Editor/LayerB/"),
