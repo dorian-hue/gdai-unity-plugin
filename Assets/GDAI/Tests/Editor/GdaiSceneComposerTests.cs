@@ -113,6 +113,21 @@ namespace GDAI.Bridge.Editor.Tests
         }
 
         [Test]
+        public void ResolveType_FailsClosed_NoMatchAmbiguousAbstract()
+        {
+            // 0 match → null
+            GdaiSceneObjectComposer.ResolveComponentType("NoSuchGeneratedComponent_xyz", out var o0);
+            Assert.AreEqual(GdaiSceneObjectComposer.ResolveOutcome.NoMatch, o0);
+            // >1 compatible runtime match → Ambiguous (never FirstOrDefault)
+            GdaiSceneObjectComposer.ResolveComponentType("DupComponent", out var oAmb);
+            Assert.AreEqual(GdaiSceneObjectComposer.ResolveOutcome.Ambiguous, oAmb);
+            // abstract engine base Collider2D is not directly instantiable via the generated path;
+            // a unique generated MonoBehaviour resolves.
+            GdaiSceneObjectComposer.ResolveComponentType("EnemyDirector", out var oOk);
+            Assert.AreEqual(GdaiSceneObjectComposer.ResolveOutcome.Resolved, oOk);
+        }
+
+        [Test]
         public void Composer_RefusesToAdoptUnmarkedHumanObject()
         {
             GdaiCanonicalScene.EnsureSavedAndInBuild(ScenePath);

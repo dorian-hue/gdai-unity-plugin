@@ -44,17 +44,49 @@ namespace GDAI.Bridge.Editor.LayerC
             { "CircleCollider2D", typeof(CircleCollider2D) },
         };
 
-        /// <summary>Resolve a component type by its exact contract name across generated + engine assemblies.</summary>
-        public static Type ResolveComponentType(string name)
+        // player-compiled (non-Editor) assembly names — the only place a scene-attachable
+        // generated MonoBehaviour may live. Computed once; a component type from an Editor
+        // assembly can never be added to a runtime scene object and is rejected.
+        private static HashSet<string> _playerAssemblies;
+        private static HashSet<string> PlayerAssemblies()
         {
+            if (_playerAssemblies != null) return _playerAssemblies;
+            _playerAssemblies = new HashSet<string>(
+                UnityEditor.Compilation.CompilationPipeline
+                    .GetAssemblies(UnityEditor.Compilation.AssembliesType.Player)
+                    .Select(a => a.name));
+            return _playerAssemblies;
+        }
+
+        public enum ResolveOutcome { Resolved, NoMatch, Ambiguous, NotInstantiable, EditorOnly }
+
+        /// <summary>Resolve a component type by its exact contract name, fail-closed. Never FirstOrDefault.</summary>
+        public static Type ResolveComponentType(string name) => ResolveComponentType(name, out _);
+
+        public static Type ResolveComponentType(string name, out ResolveOutcome outcome)
+        {
+            outcome = ResolveOutcome.NoMatch;
             if (string.IsNullOrEmpty(name)) return null;
-            if (EngineTypes.TryGetValue(name, out var et)) return et;
-            // generated MonoBehaviours live in the project's default assemblies; match by simple name,
-            // require it to be a Component, and require an unambiguous single match.
-            var matches = TypeCache.GetTypesDerivedFrom<Component>()
-                .Where(t => t.Name == name && !t.IsAbstract)
+            if (EngineTypes.TryGetValue(name, out var et)) { outcome = ResolveOutcome.Resolved; return et; }
+
+            // candidates: exact simple-name Components that can be instantiated on a GameObject.
+            var all = TypeCache.GetTypesDerivedFrom<Component>().Where(t => t.Name == name).ToList();
+            if (all.Count == 0) { outcome = ResolveOutcome.NoMatch; return null; }
+
+            // reject non-instantiable shapes outright
+            var instantiable = all.Where(t => !t.IsAbstract && !t.IsInterface && !t.IsGenericTypeDefinition).ToList();
+            if (instantiable.Count == 0) { outcome = ResolveOutcome.NotInstantiable; return null; }
+
+            // a generated scene component must be a MonoBehaviour living in a PLAYER assembly
+            // (Editor-assembly components can't be added to a runtime scene object).
+            var player = PlayerAssemblies();
+            var runtime = instantiable
+                .Where(t => typeof(MonoBehaviour).IsAssignableFrom(t) && player.Contains(t.Assembly.GetName().Name))
                 .ToList();
-            return matches.Count == 1 ? matches[0] : null;
+            if (runtime.Count == 0) { outcome = ResolveOutcome.EditorOnly; return null; }
+            if (runtime.Count > 1) { outcome = ResolveOutcome.Ambiguous; return null; }
+            outcome = ResolveOutcome.Resolved;
+            return runtime[0];
         }
 
         /// <summary>Create/verify the five canonical objects. Existing GDAI-marked objects are reused.</summary>
