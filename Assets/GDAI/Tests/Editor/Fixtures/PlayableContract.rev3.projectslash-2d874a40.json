@@ -1,0 +1,180 @@
+{
+  "schema_version": "gdai.unity.playable_contract.v1",
+  "profile_id": "unity.pointer_action_demo.v1",
+  "canonical_scene": {
+    "path": "Assets/Scenes/Main.unity",
+    "add_to_build_settings": true
+  },
+  "input": {
+    "asset_path": "Assets/GDAI_Project/Generated/Input/GDAI_DefaultControls.inputactions",
+    "map": "Gameplay",
+    "actions": [
+      {
+        "id": "6d202212-57a1-5009-a2c8-df62fc84cf7d",
+        "name": "PointerPosition",
+        "type": "Value",
+        "control_type": "Vector2",
+        "binding": "<Pointer>/position"
+      },
+      {
+        "id": "5c7eabed-23af-5537-b8d1-761382b6c8ca",
+        "name": "LeftClick",
+        "type": "Button",
+        "control_type": "Button",
+        "binding": "<Mouse>/leftButton"
+      },
+      {
+        "id": "10a8be8d-97ca-57a1-8dfb-4ffe5f52419a",
+        "name": "RightClick",
+        "type": "Button",
+        "control_type": "Button",
+        "binding": "<Mouse>/rightButton"
+      }
+    ],
+    "component_bindings": [
+      {
+        "component": "InputManager",
+        "field": "_pointerPositionRef",
+        "action": "Gameplay/PointerPosition"
+      },
+      {
+        "component": "InputManager",
+        "field": "_leftClickRef",
+        "action": "Gameplay/LeftClick"
+      },
+      {
+        "component": "InputManager",
+        "field": "_rightClickRef",
+        "action": "Gameplay/RightClick"
+      }
+    ]
+  },
+  "player": {
+    "object_name": "Player",
+    "object_role": "player",
+    "tag": "Player",
+    "sprite_role": "player",
+    "sprite_entity_id": "8f7f846c-84f4-4c78-985c-9b129b3ccdf6",
+    "required_components": [
+      "SpriteRenderer",
+      "Rigidbody2D"
+    ],
+    "host_components": [
+      "CharacterStateMachine",
+      "CombatLocatorSystem"
+    ]
+  },
+  "enemy_prefab": {
+    "asset_path": "Assets/GDAI_Project/Generated/Prefabs/GDAI_DefaultEnemy.prefab",
+    "object_name": "GDAI_DefaultEnemy",
+    "layer": "Default",
+    "sprite_role": "enemy",
+    "sprite_entity_id": "1ce221b0-fb97-4b8b-b7db-cf4ba21888a9",
+    "required_runtime_components": [
+      "Rigidbody2D",
+      "BoxCollider2D",
+      "SpriteRenderer"
+    ],
+    "director_bindings": [
+      {
+        "component": "EnemyDirector",
+        "field": "enemyPrefab",
+        "object": "EnemyManager"
+      }
+    ]
+  },
+  "scene_objects": [
+    {
+      "name": "Player",
+      "components": [
+        "SpriteRenderer",
+        "Rigidbody2D",
+        "CharacterStateMachine",
+        "CombatLocatorSystem"
+      ],
+      "tag": "Player"
+    },
+    {
+      "name": "InputManager",
+      "components": [
+        "InputManager"
+      ]
+    },
+    {
+      "name": "GameIntegrationController",
+      "components": [
+        "GameIntegrationController"
+      ]
+    },
+    {
+      "name": "EnemyManager",
+      "components": [
+        "EnemyDirector"
+      ]
+    },
+    {
+      "name": "Main Camera",
+      "components": [
+        "Camera"
+      ]
+    }
+  ],
+  "scene_bindings": [
+    {
+      "component": "GameIntegrationController",
+      "field": "inputManager",
+      "target_component": "InputManager"
+    },
+    {
+      "component": "GameIntegrationController",
+      "field": "characterStateMachine",
+      "target_component": "CharacterStateMachine",
+      "target_object": "Player"
+    },
+    {
+      "component": "GameIntegrationController",
+      "field": "combatLocatorSystem",
+      "target_component": "CombatLocatorSystem",
+      "target_object": "Player"
+    },
+    {
+      "component": "GameIntegrationController",
+      "field": "enemyDirector",
+      "target_component": "EnemyDirector"
+    },
+    {
+      "component": "GameIntegrationController",
+      "field": "player",
+      "target_transform": "Player"
+    },
+    {
+      "component": "InputManager",
+      "field": "_mainCamera",
+      "target_component": "Camera"
+    },
+    {
+      "component": "InputManager",
+      "field": "_playerReferenceTransform",
+      "target_transform": "Player"
+    }
+  ],
+  "value_bindings": [
+    {
+      "component": "CombatLocatorSystem",
+      "field": "enemyLayer",
+      "value_type": "LayerMask",
+      "layers": [
+        "Default"
+      ]
+    }
+  ],
+  "self_checks": [
+    "semantic_bindings",
+    "scene_refs",
+    "input_refs",
+    "enemy_prefab",
+    "player_movement",
+    "enemy_hittable",
+    "alpha"
+  ]
+}
