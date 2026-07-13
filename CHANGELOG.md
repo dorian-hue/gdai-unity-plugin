@@ -1,3 +1,31 @@
+## v0.1.0-alpha.8.6 (2026-07-14)
+
+- Zero-manual playable composer consuming the frozen
+  `gdai.unity.playable_contract.v1` contract_revision 4 (identity pinned as
+  schema + revision + sha256): one CTA composes the five canonical owned scene
+  objects, deterministic InputActionAsset, owned enemy prefab (sprite-fit
+  non-zero collider), all 7 scene references, 3 action-matched input
+  references, LayerMask value binding, camera fit_arena framing (solved
+  orthographic size from arena world-bounds), and exactly one active
+  AudioListener — `manual_assembly_steps = 0`.
+- Resumable CTA operation state survives real domain reloads
+  (`[InitializeOnLoad]` + afterAssemblyReload): atomic Library-scoped operation
+  writes, stale (>24h) never auto-resumes, multiple-active and contract-drift
+  (schema/revision/sha256) fail closed; the destructive generated-root replace
+  is never repeated.
+- Ownership discipline: every composed object/prefab carries
+  `GdaiGeneratedPlayableMarker`; same-named or same-path human objects and
+  prefabs without the marker are preserved verbatim and never adopted,
+  stamped, renamed, or overwritten (active AND inactive).
+- Hard receipt `GDAIPlayableReceipt.json` by independent readback of the saved
+  scene (never builder return values) + ownership manifest
+  `GDAIPlayableAssets.json` (atomic, identity-pinned, forward+reverse marker
+  verification); the CTA completes only on a PASS receipt.
+- Proven on a real production export copy: receipt 18/18 PASS, PlayMode with
+  real semantic sprites (player visible, enemy auto-spawned and hittable),
+  authenticated post-reload catalog read with the scoped plugin token.
+- EditMode suite grown to 87 tests (68 new since 8.5).
+
 ## v0.1.0-alpha.8.5 (2026-07-12)
 
 - Fail-closed GDAI project binding: exported projects carry
