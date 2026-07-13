@@ -171,12 +171,48 @@ namespace GDAI.Bridge.Editor.Tests
         {
             var res = GdaiPlayableComposerCta.Run(_contract, PID, SNAP, SHA, ScenePath, T);
             Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
-            Assert.IsTrue(GdaiPlayableOwnershipManifest.Verify(out _), "manifest agrees right after a PASS run");
+            Assert.IsTrue(GdaiPlayableOwnershipManifest.Verify(_contract, PID, SNAP, SHA, out _), "manifest agrees right after a PASS run");
 
             // remove a recorded owned object → manifest no longer agrees with actual state
             UnityEngine.Object.DestroyImmediate(GdaiSceneObjectComposer.FindOwned("Player"));
-            Assert.IsFalse(GdaiPlayableOwnershipManifest.Verify(out string err), "manifest must fail closed on a missing marker");
+            Assert.IsFalse(GdaiPlayableOwnershipManifest.Verify(_contract, PID, SNAP, SHA, out string err), "manifest must fail closed on a missing marker");
             StringAssert.Contains("Player", err);
+        }
+
+        [Test]
+        public void OwnershipManifest_Verify_FailsOnForeignContractIdentity()
+        {
+            var res = GdaiPlayableComposerCta.Run(_contract, PID, SNAP, SHA, ScenePath, T);
+            Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
+            // a manifest from a different snapshot / contract hash must never lend ownership
+            Assert.IsFalse(GdaiPlayableOwnershipManifest.Verify(_contract, PID, "different-snapshot", SHA, out string e1), "snapshot mismatch");
+            StringAssert.Contains("snapshot", e1);
+            Assert.IsFalse(GdaiPlayableOwnershipManifest.Verify(_contract, PID, SNAP, "deadbeef", out string e2), "sha mismatch");
+            StringAssert.Contains("sha256", e2);
+        }
+
+        [Test]
+        public void Receipt_InputRef_MustMatchPinnedAction_NotJustNonNull()
+        {
+            var res = GdaiPlayableComposerCta.Run(_contract, PID, SNAP, SHA, ScenePath, T);
+            Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
+
+            // mis-wire _pointerPositionRef to a DIFFERENT (but valid, assignable) InputActionReference —
+            // the LeftClick action. It sticks (right type) but its action identity is wrong, so it must
+            // NOT count as a satisfied input ref.
+            var wrongRef = AssetDatabase.LoadAllAssetsAtPath(_contract.input.asset_path)
+                .First(o => o != null && o.GetType().Name == "InputActionReference" && o.name == "Gameplay/LeftClick");
+            var im = GdaiSceneObjectComposer.FindOwned("InputManager")
+                .GetComponent(GdaiSceneObjectComposer.ResolveComponentType("InputManager"));
+            var so = new SerializedObject(im);
+            so.FindProperty("_pointerPositionRef").objectReferenceValue = wrongRef;
+            so.ApplyModifiedProperties();
+            EditorSceneManager.SaveScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene(), ScenePath);
+
+            var r2 = GdaiPlayableReceiptWriter.Build(_contract, PID, SNAP, SHA, ScenePath, T);
+            var chk = r2.checks.First(x => x.key == "input_refs");
+            Assert.AreNotEqual("3", chk.actual, "a wrong-but-non-null input ref must not count");
+            Assert.AreNotEqual("PASS", r2.status, "receipt must not PASS with a mis-wired input ref");
         }
     }
 }

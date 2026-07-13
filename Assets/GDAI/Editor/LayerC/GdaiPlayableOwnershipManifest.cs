@@ -28,7 +28,9 @@ namespace GDAI.Bridge.Editor.LayerC
     [Serializable]
     public class GdaiPlayableAssetsManifest
     {
-        public string schema_version = SchemaVersion;
+        // No default initializer: a foreign manifest that OMITS this field must deserialize to null and
+        // be rejected, not silently pass the schema check. Write() always sets it explicitly.
+        public string schema_version;
         public string project_id;
         public string snapshot_id;
         public int contract_revision;
@@ -68,6 +70,7 @@ namespace GDAI.Bridge.Editor.LayerC
             {
                 var m = new GdaiPlayableAssetsManifest
                 {
+                    schema_version = GdaiPlayableAssetsManifest.SchemaVersion,
                     project_id = projectId,
                     snapshot_id = snapshotId,
                     contract_revision = contract.contract_revision,
@@ -115,16 +118,33 @@ namespace GDAI.Bridge.Editor.LayerC
         }
 
         /// <summary>
-        /// Re-read the manifest against the ACTUAL scene/asset state. Every recorded owned object must
-        /// still carry a live marker with matching identity, and every recorded asset GUID must still
-        /// resolve at its path. Any disagreement → false + reason (never a silent trust).
+        /// Re-read the manifest against the ACTUAL scene/asset state AND the current session identity.
+        /// Fails closed on: missing/absent-schema manifest; a stale/foreign manifest (different contract
+        /// revision/sha256, snapshot, or project); an empty owned list; any recorded asset GUID that no
+        /// longer resolves; a recorded owned object without a matching live marker (forward); and a live
+        /// owned marker not recorded in the manifest (reverse — no under-recording of ownership).
         /// </summary>
-        public static bool Verify(out string error)
+        public static bool Verify(GdaiPlayableContract contract, string projectId, string snapshotId,
+            string contractSha256, out string error)
         {
             error = null;
             var m = Load();
             if (m == null) { error = "ownership manifest missing"; return false; }
-            if (m.schema_version != GdaiPlayableAssetsManifest.SchemaVersion) { error = "manifest schema mismatch: " + m.schema_version; return false; }
+            if (m.schema_version != GdaiPlayableAssetsManifest.SchemaVersion) { error = "manifest schema mismatch: " + (m.schema_version ?? "<absent>"); return false; }
+
+            // session/contract identity: a manifest from a different composition is refused, so a stale
+            // or foreign file can never lend ownership to the current scene.
+            if (contract != null && m.contract_revision != contract.contract_revision)
+            { error = $"manifest contract_revision {m.contract_revision} != {contract.contract_revision}"; return false; }
+            if (!string.Equals(m.contract_sha256, contractSha256, StringComparison.OrdinalIgnoreCase))
+            { error = "manifest contract_sha256 mismatch"; return false; }
+            if (!string.Equals(m.snapshot_id, snapshotId, StringComparison.Ordinal))
+            { error = "manifest snapshot_id mismatch"; return false; }
+            if (!string.Equals(m.project_id, projectId, StringComparison.Ordinal))
+            { error = "manifest project_id mismatch"; return false; }
+
+            var recorded = m.owned_scene_objects ?? new List<GdaiOwnedObjectRecord>();
+            if (recorded.Count == 0) { error = "manifest records no owned objects (would verify vacuously)"; return false; }
 
             // assets: recorded GUID must equal the live GUID at the recorded path
             foreach (var a in new[] { m.input_asset, m.enemy_prefab, m.canonical_scene })
@@ -135,15 +155,22 @@ namespace GDAI.Bridge.Editor.LayerC
                 if (!string.Equals(live, a.guid, StringComparison.Ordinal)) { error = "manifest asset GUID mismatch at " + a.path; return false; }
             }
 
-            // owned objects: each must still have a live marker with matching identity
             var liveMarkers = UnityEngine.Object.FindObjectsByType<GdaiGeneratedPlayableMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            foreach (var o in m.owned_scene_objects ?? new List<GdaiOwnedObjectRecord>())
+
+            // forward: each recorded owned object must still have a live marker with matching identity
+            foreach (var o in recorded)
             {
-                bool ok = liveMarkers.Any(mk => mk.gameObject.name == o.name
-                    && mk.ownedRole == o.role
-                    && mk.profileId == o.profile_id
-                    && mk.snapshotId == o.snapshot_id);
+                bool ok = liveMarkers.Any(mk => mk.gameObject.name == o.name && mk.ownedRole == o.role
+                    && mk.profileId == o.profile_id && mk.snapshotId == o.snapshot_id);
                 if (!ok) { error = "manifest owned object has no matching live marker: " + o.name + " (" + o.role + ")"; return false; }
+            }
+
+            // reverse: every live owned marker must be recorded (ownership is not under-recorded)
+            foreach (var mk in liveMarkers)
+            {
+                bool recordedHas = recorded.Any(o => o.name == mk.gameObject.name && o.role == mk.ownedRole
+                    && o.profile_id == mk.profileId && o.snapshot_id == mk.snapshotId);
+                if (!recordedHas) { error = "live owned object not recorded in manifest: " + mk.gameObject.name; return false; }
             }
             return true;
         }

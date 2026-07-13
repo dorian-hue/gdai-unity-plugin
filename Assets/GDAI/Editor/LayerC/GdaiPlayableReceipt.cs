@@ -41,6 +41,7 @@ namespace GDAI.Bridge.Editor.LayerC
         public string generated_at;
         public string status;                 // PASS | PARTIAL | FAIL
         public int manual_assembly_steps;
+        public string framing_inputs;         // §6 coverage: fit_arena inputs, verified via camera_ortho_size
         public List<GdaiReceiptCheck> checks = new List<GdaiReceiptCheck>();
         public List<string> failures = new List<string>();
 
@@ -51,6 +52,26 @@ namespace GDAI.Bridge.Editor.LayerC
     {
         private static readonly string[] Canonical = { "Player", "InputManager", "GameIntegrationController", "EnemyManager", "Main Camera" };
         private const float Eps = 0.001f;
+
+        // The CANONICAL required binding sets for this profile (mirrors the contract validator's pinned
+        // sets). The receipt verifies these INDEPENDENTLY of the contract's own list length, so a short
+        // or empty contract binding list can never make the check pass vacuously.
+        private static readonly (string comp, string field)[] RequiredSceneRefs =
+        {
+            ("GameIntegrationController", "inputManager"),
+            ("GameIntegrationController", "characterStateMachine"),
+            ("GameIntegrationController", "combatLocatorSystem"),
+            ("GameIntegrationController", "enemyDirector"),
+            ("GameIntegrationController", "player"),
+            ("InputManager", "_mainCamera"),
+            ("InputManager", "_playerReferenceTransform"),
+        };
+        private static readonly (string field, string action)[] RequiredInputRefs =
+        {
+            ("_pointerPositionRef", "Gameplay/PointerPosition"),
+            ("_leftClickRef", "Gameplay/LeftClick"),
+            ("_rightClickRef", "Gameplay/RightClick"),
+        };
 
         /// <summary>
         /// Reopen the saved scene and build the receipt by INDEPENDENT readback. nowUtc is injected
@@ -88,22 +109,26 @@ namespace GDAI.Bridge.Editor.LayerC
             int ownedCanonical = Canonical.Count(n => markers.Count(m => m.gameObject.name == n) == 1);
             Check("objects_owned", "5", ownedCanonical.ToString());
 
-            // 2 · scene refs 7/7 — each declared field non-null AND pointing at a GDAI-owned object
-            int sceneOk = 0, sceneTotal = c.scene_bindings?.Count ?? 0;
-            foreach (var b in c.scene_bindings ?? new List<GdaiPlayableContract.SceneBindingSpec>())
-                if (SceneRefBoundToOwned(b)) sceneOk++;
-            Check("scene_refs", sceneTotal.ToString(), sceneOk.ToString());
+            // independent guard: the receipt must not trust the contract's own list lengths, so it also
+            // re-asserts the frozen shape (revision 4, exactly the required binding counts) up front.
+            Check("contract_revision", GdaiPlayableContract.Revision.ToString(), c.contract_revision.ToString());
 
-            // 3 · input refs 3/3 — InputManager's three InputActionReference fields non-null
-            int inputOk = CountNonNullFields("InputManager", "InputManager",
-                new[] { "_pointerPositionRef", "_leftClickRef", "_rightClickRef" });
-            Check("input_refs", "3", inputOk.ToString());
+            // 2 · scene refs 7/7 — the CANONICAL required set, each bound to a GDAI-owned object (not the
+            // contract's own count, which would pass vacuously for a short/empty binding list).
+            int sceneOk = RequiredSceneRefs.Count(rr => RequiredSceneRefBound(rr.comp, rr.field));
+            Check("scene_refs", RequiredSceneRefs.Length.ToString(), sceneOk.ToString());
 
-            // 4 · value bindings — each contract value binding's mask includes every named layer
+            // 3 · input refs 3/3 — each field must reference the InputActionReference whose name IS the
+            // pinned action (non-null alone would let a wrong/stale/junk reference false-pass).
+            int inputOk = RequiredInputRefs.Count(ir => InputRefMatchesAction(ir.field, ir.action));
+            Check("input_refs", RequiredInputRefs.Length.ToString(), inputOk.ToString());
+
+            // 4 · value binding — the enemyLayer mask must include the enemy's layer; an empty/absent
+            // contract list is treated as a FAIL (expected is a canonical lower bound of 1).
             int valOk = 0, valTotal = c.value_bindings?.Count ?? 0;
             foreach (var v in c.value_bindings ?? new List<GdaiPlayableContract.ValueBindingSpec>())
                 if (ValueBindingSatisfied(v)) valOk++;
-            Check("value_bindings", valTotal.ToString(), valOk.ToString());
+            Check("value_bindings", Math.Max(1, valTotal).ToString(), valOk.ToString());
 
             // 5 · enemy prefab assigned (persistent asset on EnemyDirector.enemyPrefab)
             Check("enemy_prefab_assigned", "true", EnemyPrefabAssigned().ToString().ToLowerInvariant());
@@ -116,13 +141,16 @@ namespace GDAI.Bridge.Editor.LayerC
 
             // 8 · camera rev4 facts (read from the reopened Main Camera + contract spec)
             CameraChecks(c.camera, Check);
+            if (c.camera != null)
+                r.framing_inputs = $"target_aspect={c.camera.target_aspect:0.####} padding_ratio={c.camera.padding_ratio:0.###} " +
+                    (c.camera.world_bounds != null ? $"world_bounds={c.camera.world_bounds.width:0.##}x{c.camera.world_bounds.height:0.##}" : "world_bounds=?");
 
             // 9 · Build Settings contains the enabled scene
             bool inBuild = EditorBuildSettings.scenes.Any(s => s.path == scenePath && s.enabled);
             Check("scene_in_build_settings", "true", inBuild.ToString().ToLowerInvariant());
 
-            // 10 · ownership manifest agrees with actual state
-            bool manifestOk = GdaiPlayableOwnershipManifest.Verify(out string mErr);
+            // 10 · ownership manifest agrees with actual state AND this session's identity
+            bool manifestOk = GdaiPlayableOwnershipManifest.Verify(c, projectId, snapshotId, contractSha256, out string mErr);
             Check("ownership_manifest", "verified", manifestOk ? "verified" : ("mismatch:" + mErr));
 
             // 11 · manual assembly steps
@@ -143,18 +171,17 @@ namespace GDAI.Bridge.Editor.LayerC
             return t == null ? null : go.GetComponent(t);
         }
 
-        private static int CountNonNullFields(string ownedName, string typeName, string[] fields)
+        // A required InputManager input ref is satisfied only when the field references an
+        // InputActionReference whose name IS the pinned action (identity, not mere non-null).
+        private static bool InputRefMatchesAction(string field, string action)
         {
-            var comp = OwnedComponent(ownedName, typeName);
-            if (comp == null) return 0;
-            var so = new SerializedObject(comp);
-            int n = 0;
-            foreach (var f in fields)
-            {
-                var p = so.FindProperty(f);
-                if (p != null && p.propertyType == SerializedPropertyType.ObjectReference && p.objectReferenceValue != null) n++;
-            }
-            return n;
+            var im = OwnedComponent("InputManager", "InputManager");
+            if (im == null) return false;
+            var so = new SerializedObject(im);
+            var p = so.FindProperty(field);
+            if (p == null || p.propertyType != SerializedPropertyType.ObjectReference) return false;
+            var refObj = p.objectReferenceValue;
+            return refObj != null && refObj.GetType().Name == "InputActionReference" && refObj.name == action;
         }
 
         // The source component that hosts each binding field, keyed by the contract component name.
@@ -167,14 +194,15 @@ namespace GDAI.Bridge.Editor.LayerC
             return hosts.Count == 1 ? hosts[0] : null;
         }
 
-        private static bool SceneRefBoundToOwned(GdaiPlayableContract.SceneBindingSpec b)
+        // A required scene ref is bound only when the source component's field references a GDAI-owned
+        // object (marker present) — never a stray human object, never null.
+        private static bool RequiredSceneRefBound(string component, string field)
         {
-            var src = ResolveSource(b.component);
+            var src = ResolveSource(component);
             if (src == null) return false;
             var so = new SerializedObject(src);
-            var p = so.FindProperty(b.field);
+            var p = so.FindProperty(field);
             if (p == null || p.propertyType != SerializedPropertyType.ObjectReference || p.objectReferenceValue == null) return false;
-            // the referenced object must be a GDAI-owned scene object (marker present), never a stray human object
             var go = GameObjectOf(p.objectReferenceValue);
             return go != null && go.GetComponent<GdaiGeneratedPlayableMarker>() != null;
         }
@@ -238,12 +266,12 @@ namespace GDAI.Bridge.Editor.LayerC
             Check("camera_clear_flags", "SolidColor", cam.clearFlags.ToString());
             Check("camera_background", ColorStr(spec.background), ColorStr(cam.backgroundColor));
             Check("camera_position_z", spec.position != null ? spec.position.z.ToString("0.###") : "?", camGo.transform.position.z.ToString("0.###"));
-            // framing inputs recorded from the contract (the solved size above transitively verifies them)
             Check("camera_framing", "fit_arena", spec.framing ?? "null");
-            Check("camera_target_aspect", spec.target_aspect.ToString("0.####"), spec.target_aspect.ToString("0.####"));
-            Check("camera_padding_ratio", spec.padding_ratio.ToString("0.###"), spec.padding_ratio.ToString("0.###"));
-            Check("camera_world_bounds", spec.world_bounds != null ? $"{spec.world_bounds.width:0.##}x{spec.world_bounds.height:0.##}" : "?",
-                  spec.world_bounds != null ? $"{spec.world_bounds.width:0.##}x{spec.world_bounds.height:0.##}" : "?");
+            // NOTE: target_aspect / padding_ratio / world_bounds are the fit_arena framing INPUTS — the
+            // camera does not store them, so the LIVE proof that they were applied is camera_ortho_size
+            // above (== max(h/2, w/(2*aspect))*(1+padding) computed against the actual camera). They are
+            // recorded in receipt.framing_inputs (set in Build) for external §6 coverage, NOT as vacuous
+            // spec-vs-spec checks.
         }
 
         private static string ColorStr(GdaiPlayableContract.Rgba c) =>
