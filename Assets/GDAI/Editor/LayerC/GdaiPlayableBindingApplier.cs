@@ -30,11 +30,11 @@ namespace GDAI.Bridge.Editor.LayerC
         public class Result
         {
             public bool Ok;
-            public int SceneBound, SceneTotal, ValueBound, ValueTotal;
+            public int SceneBound, SceneTotal, ValueBound, ValueTotal, InputBound, InputTotal;
             public readonly List<string> Bound = new List<string>();
             public readonly List<string> Errors = new List<string>();
             public string Summary => Errors.Count == 0
-                ? $"scene {SceneBound}/{SceneTotal}, value {ValueBound}/{ValueTotal} bound"
+                ? $"scene {SceneBound}/{SceneTotal}, input {InputBound}/{InputTotal}, value {ValueBound}/{ValueTotal} bound"
                 : string.Join("; ", Errors);
         }
 
@@ -44,6 +44,7 @@ namespace GDAI.Bridge.Editor.LayerC
             if (c == null) { r.Errors.Add("null contract"); return r; }
             r.SceneTotal = c.scene_bindings?.Count ?? 0;
             r.ValueTotal = c.value_bindings?.Count ?? 0;
+            r.InputTotal = c.input?.component_bindings?.Count ?? 0;
 
             foreach (var b in c.scene_bindings ?? new List<GdaiPlayableContract.SceneBindingSpec>())
                 if (TryApplyScene(b, r, out string err)) r.SceneBound++; else r.Errors.Add(err);
@@ -51,8 +52,47 @@ namespace GDAI.Bridge.Editor.LayerC
             foreach (var v in c.value_bindings ?? new List<GdaiPlayableContract.ValueBindingSpec>())
                 if (TryApplyValue(v, r, out string err)) r.ValueBound++; else r.Errors.Add(err);
 
-            r.Ok = r.Errors.Count == 0 && r.SceneBound == r.SceneTotal && r.ValueBound == r.ValueTotal;
+            ApplyInputRefs(c, r);
+
+            r.Ok = r.Errors.Count == 0 && r.SceneBound == r.SceneTotal
+                   && r.ValueBound == r.ValueTotal && r.InputBound == r.InputTotal;
             return r;
+        }
+
+        // Bind the 3 InputActionReference fields on InputManager from the contract's OWN input asset
+        // (path-scoped LoadAllAssetsAtPath — synchronous, no FindAssets index lag, and blind to any
+        // OTHER .inputactions in the user's project). Dedup by action name defensively.
+        private static void ApplyInputRefs(GdaiPlayableContract c, Result r)
+        {
+            var cbs = c.input?.component_bindings;
+            if (cbs == null || cbs.Count == 0) return;
+            string assetPath = c.input?.asset_path;
+            if (string.IsNullOrEmpty(assetPath)) { r.Errors.Add("input asset_path missing"); return; }
+
+            var refsByName = new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+            foreach (var o in AssetDatabase.LoadAllAssetsAtPath(assetPath))
+                if (o != null && o.GetType().Name == "InputActionReference" && !refsByName.ContainsKey(o.name))
+                    refsByName[o.name] = o;
+
+            if (!TryFindOwnedHost("InputManager", out var imGo, out _, out string hErr)) { r.Errors.Add("input refs: " + hErr); return; }
+            var im = imGo.GetComponent(GdaiSceneObjectComposer.ResolveComponentType("InputManager"));
+            var so = new SerializedObject(im);
+
+            foreach (var cb in cbs)
+            {
+                if (cb.component != "InputManager") { r.Errors.Add($"input binding component must be InputManager, got {cb.component}"); continue; }
+                if (!refsByName.TryGetValue(cb.action, out var refObj))
+                { r.Errors.Add($"no InputActionReference '{cb.action}' in {assetPath}"); continue; }
+                var prop = so.FindProperty(cb.field);
+                if (prop == null || prop.propertyType != SerializedPropertyType.ObjectReference)
+                { r.Errors.Add($"InputManager.{cb.field} is not an object-reference field"); continue; }
+                prop.objectReferenceValue = refObj;
+                so.ApplyModifiedProperties();
+                if (prop.objectReferenceValue != refObj) { r.Errors.Add($"InputManager.{cb.field}: ref did not stick"); continue; }
+                r.Bound.Add($"InputManager.{cb.field} -> {cb.action}");
+                r.InputBound++;
+            }
+            UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(imGo.scene);
         }
 
         // The single OWNED object carrying a component whose simple type-name is typeName.

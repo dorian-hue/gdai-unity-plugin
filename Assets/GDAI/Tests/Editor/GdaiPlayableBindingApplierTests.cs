@@ -4,6 +4,7 @@
 using System.IO;
 using System.Linq;
 using GDAI.Bridge.Editor.LayerA;
+using GDAI.Bridge.Editor.LayerB;
 using GDAI.Bridge.Editor.LayerC;
 using NUnit.Framework;
 using UnityEditor;
@@ -34,15 +35,20 @@ namespace GDAI.Bridge.Editor.Tests
             _contract = GdaiPlayableContract.Parse(FixtureJson()).Contract;
             Assert.IsNotNull(_contract, "fixture must parse");
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            if (AssetDatabase.IsValidFolder("Assets/GDAI_Project")) AssetDatabase.DeleteAsset("Assets/GDAI_Project");
             GdaiCanonicalScene.EnsureSavedAndInBuild(ScenePath);
             var compose = GdaiSceneObjectComposer.Compose(_contract, _contract.profile_id, "2d874a40");
             Assert.IsTrue(compose.Ok, compose.Summary);
+            // the input refs bind from the contract's own input asset, so it must exist
+            var ia = GdaiInputAssetBuilder.EnsureAsset(_contract);
+            Assert.IsTrue(ia.Ok, ia.Error);
         }
 
         [TearDown]
         public void TearDown()
         {
             if (File.Exists(ScenePath)) AssetDatabase.DeleteAsset(ScenePath);
+            if (AssetDatabase.IsValidFolder("Assets/GDAI_Project")) AssetDatabase.DeleteAsset("Assets/GDAI_Project");
             foreach (var s in EditorBuildSettings.scenes.Where(s => s.path == ScenePath).ToArray())
                 EditorBuildSettings.scenes = EditorBuildSettings.scenes.Where(x => x.path != ScenePath).ToArray();
         }
@@ -54,7 +60,14 @@ namespace GDAI.Bridge.Editor.Tests
             Assert.IsTrue(r.Ok, r.Summary);
             Assert.AreEqual(7, r.SceneBound, "all 7 scene refs bound");
             Assert.AreEqual(_contract.scene_bindings.Count, r.SceneTotal);
+            Assert.AreEqual(3, r.InputBound, "all 3 input refs bound");
             Assert.AreEqual(1, r.ValueBound, "the enemyLayer value binding bound");
+
+            // input refs land on the real InputActionReference fields
+            var imInput = SoOf("InputManager", "InputManager");
+            Assert.IsNotNull(imInput.FindProperty("_pointerPositionRef").objectReferenceValue, "_pointerPositionRef");
+            Assert.IsNotNull(imInput.FindProperty("_leftClickRef").objectReferenceValue, "_leftClickRef");
+            Assert.IsNotNull(imInput.FindProperty("_rightClickRef").objectReferenceValue, "_rightClickRef");
 
             var player = GdaiSceneObjectComposer.FindOwned("Player");
             var camera = GdaiSceneObjectComposer.FindOwned("Main Camera");
