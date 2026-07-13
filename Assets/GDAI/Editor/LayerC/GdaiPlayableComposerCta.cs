@@ -17,6 +17,7 @@ using System.IO;
 using System.Linq;
 using GDAI.Bridge.Editor.LayerA;
 using GDAI.Bridge.Editor.LayerB;
+using Newtonsoft.Json;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -37,7 +38,74 @@ namespace GDAI.Bridge.Editor.LayerC
 
         private static string Root() => Directory.GetParent(Application.dataPath).FullName;
 
-        public enum ImportedContractOutcome { Composed, NotPresent, Failed }
+        public enum ImportedContractOutcome { Composed, NotPresent, Failed, DeferredToReload }
+
+        // A composed scene needs the generated MonoBehaviours (CharacterStateMachine, …) as compiled
+        // TYPES. On a FRESH sync those .cs arrive in this import and only exist after the imminent
+        // domain reload, so a synchronous compose here cannot resolve them. The window CTA therefore
+        // DEFERS: it drops this marker and the [InitializeOnLoad] resume hook composes automatically
+        // once the code has compiled — one user click, zero manual steps.
+        [Serializable] private class PendingCompose { public string project_id; public string snapshot_id; public string scene_path; public string at; }
+        private static string PendingComposePath(string root) => Path.Combine(root, "Library", "GDAI", "pending-compose.json");
+
+        private const string ProbeType = "CharacterStateMachine"; // a generated player-assembly MonoBehaviour
+        private static bool GeneratedTypesCompiled() => GdaiSceneObjectComposer.ResolveComponentType(ProbeType) != null;
+
+        /// <summary>
+        /// Window-CTA entry after a bundle import. If the contract is absent → NotPresent (legacy path).
+        /// If the generated code is already compiled → compose now (re-sync / TREE-C reopen). Otherwise the
+        /// code is compiling on the imminent reload → persist a pending-compose marker and return
+        /// DeferredToReload; the resume hook finishes automatically. This is the ONE seam the visible
+        /// window CTA uses; a fresh project composes with a single click and no manual step.
+        /// </summary>
+        public static ImportedContractOutcome RunOrDeferFromImportedContract(string projectId, string snapshotId,
+            string scenePath, DateTime nowUtc, out Result result, out string detail)
+        {
+            result = null; detail = null;
+            string root = Root();
+            string cpath = Path.Combine(root, "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
+            if (!File.Exists(cpath)) { ClearPendingCompose(root); detail = "no playable contract in bundle (pre-rev4 snapshot)"; return ImportedContractOutcome.NotPresent; }
+
+            if (!GeneratedTypesCompiled())
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(PendingComposePath(root)));
+                File.WriteAllText(PendingComposePath(root), JsonConvert.SerializeObject(
+                    new PendingCompose { project_id = projectId, snapshot_id = snapshotId, scene_path = scenePath, at = nowUtc.ToString("o") },
+                    Formatting.Indented));
+                detail = "generated code importing; the playable scene composes automatically after Unity finishes compiling";
+                return ImportedContractOutcome.DeferredToReload;
+            }
+            var outcome = RunFromImportedContract(projectId, snapshotId, scenePath, nowUtc, out result, out detail);
+            ClearPendingCompose(root);
+            return outcome;
+        }
+
+        /// <summary>
+        /// Called by the resume hook after every domain reload. If a compose was deferred and the
+        /// generated code is now compiled, run it exactly once (delete the marker first so a failed
+        /// or repeated reload never re-runs it). Returns false when there is nothing pending.
+        /// </summary>
+        public static bool TryResumePendingCompose(DateTime nowUtc, out ImportedContractOutcome outcome, out Result result, out string detail)
+        {
+            outcome = ImportedContractOutcome.NotPresent; result = null; detail = null;
+            string root = Root();
+            string pp = PendingComposePath(root);
+            if (!File.Exists(pp)) return false;
+            PendingCompose pc;
+            try { pc = JsonConvert.DeserializeObject<PendingCompose>(File.ReadAllText(pp)); }
+            catch { ClearPendingCompose(root); return false; }
+            if (pc == null || string.IsNullOrEmpty(pc.project_id)) { ClearPendingCompose(root); return false; }
+            if (!GeneratedTypesCompiled()) { detail = "generated code not compiled yet — will retry on the next reload"; return false; }
+            ClearPendingCompose(root); // run once
+            outcome = RunFromImportedContract(pc.project_id, pc.snapshot_id,
+                string.IsNullOrEmpty(pc.scene_path) ? "Assets/Scenes/Main.unity" : pc.scene_path, nowUtc, out result, out detail);
+            return true;
+        }
+
+        private static void ClearPendingCompose(string root)
+        {
+            try { var p = PendingComposePath(root); if (File.Exists(p)) File.Delete(p); } catch { }
+        }
 
         /// <summary>
         /// Window-CTA seam: compose from the contract the bundle import just wrote (if any).

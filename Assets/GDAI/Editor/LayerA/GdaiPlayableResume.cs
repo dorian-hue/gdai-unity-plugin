@@ -199,6 +199,24 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             try { GdaiPlayableResume.ResumeAfterReload(Directory.GetCurrentDirectory(), DateTime.UtcNow); }
             catch (Exception e) { Debug.LogWarning("[GDAI] resume hook error: " + e.Message); }
+
+            // The deferred compose CREATES + IMPORTS assets (input action asset, enemy prefab), which
+            // the AssetDatabase pipeline cannot service from inside the afterAssemblyReload callback.
+            // Schedule it on the next editor tick, where the pipeline is fully live.
+            EditorApplication.delayCall += DispatchPendingCompose;
+        }
+
+        // Finish a deferred playable compose on a normal editor tick: on a fresh sync the generated code
+        // only exists after the reload, so the window CTA deferred; now that types are compiled and the
+        // AssetDatabase is live, dispatch the composer automatically (one user click, zero manual steps).
+        private static void DispatchPendingCompose()
+        {
+            try
+            {
+                if (LayerC.GdaiPlayableComposerCta.TryResumePendingCompose(DateTime.UtcNow, out var outcome, out _, out var detail))
+                    Debug.Log("[GDAI][CompleteSync] deferred playable compose finished: " + outcome + " · " + detail);
+            }
+            catch (Exception e) { Debug.LogWarning("[GDAI] pending-compose dispatch error: " + e.Message); }
         }
     }
 }

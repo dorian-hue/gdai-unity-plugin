@@ -1128,7 +1128,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 //     ownership manifest, hard receipt — operation Completed only on PASS). It must
                 //     run INSTEAD of the legacy minimal scene prep, whose unmarked objects the
                 //     composer would rightly refuse. Pre-rev4 snapshots keep the legacy path.
-                var composed = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunFromImportedContract(
+                var composed = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
                     _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
                     out var playableResult, out string playableDetail);
                 switch (composed)
@@ -1136,6 +1136,15 @@ namespace GDAI.Bridge.Editor.LayerA
                     case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed:
                         Debug.Log("[GDAI][CompleteSync] playable composer: " + playableDetail);
                         break;
+                    case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.DeferredToReload:
+                        // Fresh sync: generated code is compiling; the resume hook composes + writes the
+                        // hard receipt automatically after the imminent domain reload. Still one click,
+                        // zero manual steps — just finishes on the other side of the reload.
+                        Debug.Log("[GDAI][CompleteSync] " + playableDetail);
+                        _bindingState = GdaiBindingState.SyncComplete;
+                        SetStatus(BundleStatus.RefreshTriggered,
+                            "Complete Sync: generated code imported · the playable scene composes automatically once Unity finishes compiling (no further clicks).");
+                        return;
                     case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.NotPresent:
                         Debug.Log("[GDAI][CompleteSync] " + playableDetail + " — legacy minimal scene prep");
                         GDAI.Bridge.Editor.LayerC.GdaiMinimalPlayableSceneBuilder.PrepareMenu();

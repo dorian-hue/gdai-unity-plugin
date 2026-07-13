@@ -202,6 +202,34 @@ namespace GDAI.Bridge.Editor.Tests
             Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
         }
 
+        // re-sync / reopen path: generated types already compiled → compose in the same tick.
+        [Test]
+        public void RunOrDefer_ComposesWhenTypesAlreadyCompiled()
+        {
+            var outcome = GdaiPlayableComposerCta.RunOrDeferFromImportedContract(PID, SNAP, ScenePath, T, out var res, out string detail);
+            Assert.AreEqual(GdaiPlayableComposerCta.ImportedContractOutcome.Composed, outcome, detail);
+            Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
+        }
+
+        // Fresh-sync bridge: the window CTA defers when generated code is compiling; the resume hook
+        // then dispatches the compose once — exactly-once, cleared marker. (The defer DECISION on a
+        // genuinely uncompiled project is proven by the two-process TREE-B run.)
+        [Test]
+        public void TryResumePendingCompose_DispatchesDeferredCompose_ExactlyOnce()
+        {
+            string root = Path.GetDirectoryName(Application.dataPath);
+            string pp = Path.Combine(root, "Library", "GDAI", "pending-compose.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(pp));
+            File.WriteAllText(pp, "{\"project_id\":\"" + PID + "\",\"snapshot_id\":\"" + SNAP + "\",\"scene_path\":\"" + ScenePath + "\"}");
+
+            bool ran = GdaiPlayableComposerCta.TryResumePendingCompose(T, out var outcome, out var res, out string detail);
+            Assert.IsTrue(ran, "must run when a pending-compose marker is present");
+            Assert.AreEqual(GdaiPlayableComposerCta.ImportedContractOutcome.Composed, outcome, detail);
+            Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
+            Assert.IsFalse(File.Exists(pp), "marker consumed exactly once");
+            Assert.IsFalse(GdaiPlayableComposerCta.TryResumePendingCompose(T, out _, out _, out _), "nothing pending on the second reload");
+        }
+
         // pre-rev4 snapshot: no contract in the bundle → NotPresent (caller falls back to legacy prep).
         [Test]
         public void RunFromImportedContract_NotPresent_WhenNoContract()
