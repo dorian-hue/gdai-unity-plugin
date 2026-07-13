@@ -1,3 +1,16 @@
+## v0.1.0-alpha.8.8 (2026-07-14)
+
+- Fix: the `Complete GDAI Export / Sync Project` CTA now composes the playable
+  scene on a FRESH project. On a first sync the generated MonoBehaviours are
+  imported in the same operation and only exist after the domain reload, so the
+  synchronous compose could not resolve them. The CTA now defers when the code is
+  compiling and the resume hook finishes the compose automatically after the
+  reload (next editor tick) — still one click, zero manual steps. Re-syncs where
+  the code is already compiled compose in the same tick.
+- Proven on a real fresh production export (new snapshot): TREE-B one deferred CTA
+  → auto-compose → hard receipt PASS + PlayMode (player/enemy visible & hittable);
+  TREE-C second same-snapshot sync idempotent (0 GUID drift, 0 duplicates).
+
 ## v0.1.0-alpha.8.7 (2026-07-14)
 
 - Fix: the `Complete GDAI Export / Sync Project` CTA now runs the zero-manual
