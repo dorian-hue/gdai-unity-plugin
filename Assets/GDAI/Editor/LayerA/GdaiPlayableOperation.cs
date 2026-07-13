@@ -45,10 +45,18 @@ namespace GDAI.Bridge.Editor.LayerA
     [Serializable]
     public class GdaiPlayableOperation
     {
+        // operations older than this never auto-resume (opening a weeks-old project
+        // must not silently re-run a stale write operation).
+        public const double StaleAfterHours = 24.0;
+
         public string operation_id;
         public string project_id;
         public string snapshot_id;
-        public string playable_contract_version;   // schema+profile pin
+        // contract identity is pinned as THREE facts so rev3 and rev4 are mechanically
+        // distinct (schema_version alone is identical across revisions).
+        public string contract_schema;
+        public int contract_revision;
+        public string contract_sha256;
         public string canonical_scene_path;
         public GdaiPlayablePhase phase = GdaiPlayablePhase.Created;
         public bool generated_root_committed;       // the destructive replace has happened
@@ -64,14 +72,17 @@ namespace GDAI.Bridge.Editor.LayerA
         public static string PathFor(string projectRoot, string opId) =>
             Path.Combine(OperationsDir(projectRoot), opId + ".json");
 
-        public static GdaiPlayableOperation Create(string projectRoot, string projectId, string snapshotId, string contractVersion, string scenePath, DateTime nowUtc)
+        public static GdaiPlayableOperation Create(string projectRoot, string projectId, string snapshotId,
+            string contractSchema, int contractRevision, string contractSha256, string scenePath, DateTime nowUtc)
         {
             var op = new GdaiPlayableOperation
             {
                 operation_id = Guid.NewGuid().ToString("N").Substring(0, 16),
                 project_id = projectId,
                 snapshot_id = snapshotId,
-                playable_contract_version = contractVersion,
+                contract_schema = contractSchema,
+                contract_revision = contractRevision,
+                contract_sha256 = contractSha256,
                 canonical_scene_path = scenePath,
                 phase = GdaiPlayablePhase.Created,
                 started_at = nowUtc.ToString("o"),
@@ -84,7 +95,20 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             last_updated_at = nowUtc.ToString("o");
             Directory.CreateDirectory(OperationsDir(projectRoot));
-            File.WriteAllText(PathFor(projectRoot, operation_id), JsonConvert.SerializeObject(this, Formatting.Indented));
+            var finalPath = PathFor(projectRoot, operation_id);
+            // atomic write: full temp file then replace, so a reload mid-write never reads half JSON.
+            var tmp = finalPath + ".tmp";
+            File.WriteAllText(tmp, JsonConvert.SerializeObject(this, Formatting.Indented));
+            if (File.Exists(finalPath)) File.Replace(tmp, finalPath, null);
+            else File.Move(tmp, finalPath);
+        }
+
+        /// <summary>True when the operation is older than the stale window (must not auto-resume).</summary>
+        public bool IsStale(DateTime nowUtc)
+        {
+            if (!DateTime.TryParse(started_at, null, System.Globalization.DateTimeStyles.RoundtripKind, out var started))
+                return true; // unparseable timestamp is treated as stale (fail closed)
+            return (nowUtc - started.ToUniversalTime()).TotalHours > StaleAfterHours;
         }
 
         public void Advance(string projectRoot, GdaiPlayablePhase to, DateTime nowUtc)
@@ -143,7 +167,8 @@ namespace GDAI.Bridge.Editor.LayerA
         /// Decide whether a persisted operation may resume, given the CURRENT project/snapshot/
         /// contract facts and whether a bound token is present. Never resumes on a mismatch.
         /// </summary>
-        public ResumeVerdict CanResume(string currentProjectId, string currentSnapshotId, string currentContractVersion, bool tokenPresent, out string why)
+        public ResumeVerdict CanResume(string currentProjectId, string currentSnapshotId,
+            string currentSchema, int currentRevision, string currentSha256, bool tokenPresent, out string why)
         {
             why = null;
             if (phase == GdaiPlayablePhase.Complete || phase == GdaiPlayablePhase.Aborted || phase == GdaiPlayablePhase.Failed)
@@ -151,7 +176,10 @@ namespace GDAI.Bridge.Editor.LayerA
             if (!tokenPresent) { why = "no bound token"; return ResumeVerdict.Unsafe; }
             if (!string.Equals(project_id, currentProjectId, StringComparison.OrdinalIgnoreCase)) { why = "project mismatch"; return ResumeVerdict.Unsafe; }
             if (!string.Equals(snapshot_id, currentSnapshotId, StringComparison.OrdinalIgnoreCase)) { why = "snapshot changed"; return ResumeVerdict.Unsafe; }
-            if (!string.Equals(playable_contract_version, currentContractVersion, StringComparison.Ordinal)) { why = "contract revision changed"; return ResumeVerdict.Unsafe; }
+            // all THREE contract-identity facts must match (schema alone can't tell rev3 from rev4)
+            if (!string.Equals(contract_schema, currentSchema, StringComparison.Ordinal)) { why = "contract schema changed"; return ResumeVerdict.Unsafe; }
+            if (contract_revision != currentRevision) { why = "contract revision changed (" + contract_revision + "->" + currentRevision + ")"; return ResumeVerdict.Unsafe; }
+            if (!string.Equals(contract_sha256, currentSha256, StringComparison.OrdinalIgnoreCase)) { why = "contract sha256 changed"; return ResumeVerdict.Unsafe; }
             return ResumeVerdict.Resumable;
         }
 

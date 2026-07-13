@@ -15,7 +15,8 @@ namespace GDAI.Bridge.Editor.Tests
         private static readonly DateTime T = new DateTime(2026, 7, 13, 0, 0, 0, DateTimeKind.Utc);
         private const string PID = "18bedbf4-3993-422b-97ce-e5eb910bb55c";
         private const string SNAP = "2d874a40-f10d-4d90-a3c4-5c7ffdb7cdee";
-        private const string CVER = "gdai.unity.playable_contract.v1/unity.pointer_action_demo.v1";
+        private const string SCHEMA = "gdai.unity.playable_contract.v1";
+        private const int REV = 4;
 
         [SetUp]
         public void SetUp()
@@ -34,12 +35,14 @@ namespace GDAI.Bridge.Editor.Tests
             File.WriteAllText(p, "{\"schema_version\":\"gdai.unity_export.v1\",\"project_id\":\"" + projectId + "\",\"generated_owned_paths\":[\"Assets/GDAI_Generated\"]}");
         }
 
-        private void WriteContract(string schemaProfile)
+        private void WriteContract(string mode)
         {
-            var g = UnityEditor.AssetDatabase.FindAssets("PlayableContract.rev3.projectslash-2d874a40");
+            var g = UnityEditor.AssetDatabase.FindAssets("PlayableContract.rev4.projectslash-2d874a40");
             var json = File.ReadAllText(UnityEditor.AssetDatabase.GUIDToAssetPath(g[0]));
-            // optionally corrupt the profile to force a revision mismatch
-            if (schemaProfile == "MISMATCH") json = json.Replace("unity.pointer_action_demo.v1", "unity.other.v1");
+            // "INVALID" corrupts the profile so the whole contract fails validation;
+            // "OKDIFF" keeps it valid (same schema+revision) but changes the bytes → different sha256.
+            if (mode == "INVALID") json = json.Replace("unity.pointer_action_demo.v1", "unity.other.v1");
+            else if (mode == "OKDIFF") json = json + "\n"; // trailing whitespace: still valid JSON, new sha
             var p = Path.Combine(_root, "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
             Directory.CreateDirectory(Path.GetDirectoryName(p));
             File.WriteAllText(p, json);
@@ -54,7 +57,11 @@ namespace GDAI.Bridge.Editor.Tests
 
         private GdaiPlayableOperation StartAt(GdaiPlayablePhase phase)
         {
-            var op = GdaiPlayableOperation.Create(_root, PID, SNAP, CVER, "Assets/Scenes/Main.unity", T);
+            // pin the identity of whatever contract WriteContract put on disk
+            var id = GdaiPlayableResume.OnDiskContractIdentity(_root);
+            var op = GdaiPlayableOperation.Create(_root, PID, SNAP,
+                id.Ok ? id.Schema : SCHEMA, id.Ok ? id.Revision : REV, id.Ok ? id.Sha256 : "none",
+                "Assets/Scenes/Main.unity", T);
             op.Advance(_root, phase, T);
             return op;
         }
@@ -93,11 +100,24 @@ namespace GDAI.Bridge.Editor.Tests
         }
 
         [Test]
-        public void Refuse_ContractRevisionMismatch()
+        public void Refuse_InvalidContractOnDisk()
         {
-            WriteBinding(PID); Session(true); WriteContract("MISMATCH");
+            WriteBinding(PID); Session(true); WriteContract("INVALID");
             StartAt(GdaiPlayablePhase.CodeImportedAwaitingReload);
-            Assert.AreEqual(GdaiPlayableResume.Decision.Refused, GdaiPlayableResume.ResumeAfterReload(_root, T));
+            Assert.AreEqual(GdaiPlayableResume.Decision.Refused, GdaiPlayableResume.ResumeAfterReload(_root, T),
+                "a contract that fails validation on disk must never resume");
+        }
+
+        [Test]
+        public void Refuse_ContractBytesDrift()
+        {
+            WriteBinding(PID); Session(true); WriteContract("ok");
+            // operation pins the ORIGINAL contract identity (schema + revision + sha256)
+            StartAt(GdaiPlayablePhase.CodeImportedAwaitingReload);
+            // disk then holds a still-valid contract with the SAME schema+revision but different bytes
+            WriteContract("OKDIFF");
+            Assert.AreEqual(GdaiPlayableResume.Decision.Refused, GdaiPlayableResume.ResumeAfterReload(_root, T),
+                "same schema+revision but drifted bytes (sha256 changed) must refuse — this is what schema alone cannot catch");
         }
 
         [Test]
@@ -140,5 +160,36 @@ namespace GDAI.Bridge.Editor.Tests
             StringAssert.Contains("\"decision\": \"Resumed\"", bc);
             StringAssert.Contains("\"destructive_repeated\": false", bc);
         }
+    
+        [Test]
+        public void Refuse_Rev3OperationUnderRev4Contract()
+        {
+            WriteBinding(PID); Session(true); WriteContract("ok"); // rev4 on disk
+            // operation pinned to rev3 schema+revision (different sha too)
+            var op = GdaiPlayableOperation.Create(_root, PID, SNAP, SCHEMA, 3, "oldsha", "Assets/Scenes/Main.unity", T);
+            op.Advance(_root, GdaiPlayablePhase.CodeImportedAwaitingReload, T);
+            Assert.AreEqual(GdaiPlayableResume.Decision.Refused, GdaiPlayableResume.ResumeAfterReload(_root, T),
+                "a rev3 operation must never resume under a rev4 on-disk contract");
+        }
+
+        [Test]
+        public void Refuse_StaleOperation()
+        {
+            WriteBinding(PID); Session(true); WriteContract("ok");
+            StartAt(GdaiPlayablePhase.CodeImportedAwaitingReload);
+            // evaluate 48h later → stale
+            Assert.AreEqual(GdaiPlayableResume.Decision.Refused, GdaiPlayableResume.ResumeAfterReload(_root, T.AddHours(48)));
+        }
+
+        [Test]
+        public void AtomicWrite_LeavesNoTempFile()
+        {
+            var op = GdaiPlayableOperation.Create(_root, PID, SNAP, SCHEMA, REV, "sha", "Assets/Scenes/Main.unity", T);
+            op.Advance(_root, GdaiPlayablePhase.SceneObjectsComposed, T);
+            var dir = GdaiPlayableOperation.OperationsDir(_root);
+            Assert.IsEmpty(Directory.GetFiles(dir, "*.tmp"), "no half-written temp file remains");
+            Assert.AreEqual(1, Directory.GetFiles(dir, "*.json").Length);
+        }
+
     }
 }

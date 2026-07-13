@@ -1,4 +1,4 @@
-// AUTO-0Q-P2 · P2-A tests · Contract consumer parses the REAL rev3 fixture
+// AUTO-0Q-P2 · P2-A tests · Contract consumer parses the REAL rev4 fixture
 // (verbatim Contract Gate emission for snapshot 2d874a40) and fails closed on
 // every mutilated variant. No hand-rewritten test contract.
 using System.IO;
@@ -13,8 +13,8 @@ namespace GDAI.Bridge.Editor.Tests
     {
         private static string FixturePath()
         {
-            var guids = AssetDatabase.FindAssets("PlayableContract.rev3.projectslash-2d874a40");
-            Assert.IsNotEmpty(guids, "rev3 fixture asset must be present");
+            var guids = AssetDatabase.FindAssets("PlayableContract.rev4.projectslash-2d874a40");
+            Assert.IsNotEmpty(guids, "rev4 fixture asset must be present");
             return AssetDatabase.GUIDToAssetPath(guids[0]);
         }
 

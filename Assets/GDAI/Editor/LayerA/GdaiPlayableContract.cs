@@ -21,11 +21,13 @@ namespace GDAI.Bridge.Editor.LayerA
     public class GdaiPlayableContract
     {
         public const string Schema = "gdai.unity.playable_contract.v1";
+        public const int Revision = 4;
         public const string Profile = "unity.pointer_action_demo.v1";
         public const string OwnedPrefix = "Assets/GDAI_Project/Generated/";
         public const string BundleFileName = "GDAI_PlayableContract.json";
 
         public string schema_version;
+        public int contract_revision;
         public string profile_id;
         public CanonicalScene canonical_scene;
         public InputSpec input;
@@ -140,6 +142,7 @@ namespace GDAI.Bridge.Editor.LayerA
             void Req(bool ok, string msg) { if (!ok) e.Add(msg); }
 
             Req(c.schema_version == Schema, "bad schema_version: " + c.schema_version);
+            Req(c.contract_revision == Revision, "bad contract_revision (expected " + Revision + "): " + c.contract_revision);
             Req(c.profile_id == Profile, "bad profile_id: " + c.profile_id);
 
             Req(c.canonical_scene != null && (c.canonical_scene.path ?? "").StartsWith("Assets/Scenes/")

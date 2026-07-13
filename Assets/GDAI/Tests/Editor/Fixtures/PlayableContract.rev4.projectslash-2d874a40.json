@@ -1,5 +1,6 @@
 {
   "schema_version": "gdai.unity.playable_contract.v1",
+  "contract_revision": 4,
   "profile_id": "unity.pointer_action_demo.v1",
   "canonical_scene": {
     "path": "Assets/Scenes/Main.unity",

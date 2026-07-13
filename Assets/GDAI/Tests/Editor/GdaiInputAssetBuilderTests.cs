@@ -15,7 +15,7 @@ namespace GDAI.Bridge.Editor.Tests
 
         private static string FixtureJson()
         {
-            var g = AssetDatabase.FindAssets("PlayableContract.rev3.projectslash-2d874a40");
+            var g = AssetDatabase.FindAssets("PlayableContract.rev4.projectslash-2d874a40");
             return File.ReadAllText(AssetDatabase.GUIDToAssetPath(g[0]));
         }
 

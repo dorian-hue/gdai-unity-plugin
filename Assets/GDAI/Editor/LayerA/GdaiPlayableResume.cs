@@ -14,6 +14,7 @@
 // =====================================================================================
 using System;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using UnityEditor;
 using UnityEngine;
@@ -61,18 +62,28 @@ namespace GDAI.Bridge.Editor.LayerA
             catch { return null; }
         }
 
-        // The imported playable contract on disk (schema+profile), for a real (non-circular)
-        // contract-revision reverify against what the operation recorded.
-        public static string OnDiskContractVersion(string projectRoot)
+        public struct ContractIdentity { public bool Ok; public string Schema; public int Revision; public string Sha256; }
+
+        // The imported playable contract on disk: schema + revision + sha256(bytes), for a real
+        // (non-circular) three-fact reverify against what the operation recorded.
+        public static ContractIdentity OnDiskContractIdentity(string projectRoot)
         {
             try
             {
                 var p = Path.Combine(projectRoot, "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
-                if (!File.Exists(p)) return null;
-                var res = GdaiPlayableContract.Parse(File.ReadAllText(p));
-                return res.Ok ? res.Contract.schema_version + "/" + res.Contract.profile_id : null;
+                if (!File.Exists(p)) return default;
+                var bytes = File.ReadAllBytes(p);
+                var res = GdaiPlayableContract.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+                if (!res.Ok) return default;
+                return new ContractIdentity { Ok = true, Schema = res.Contract.schema_version, Revision = res.Contract.contract_revision, Sha256 = Sha256Hex(bytes) };
             }
-            catch { return null; }
+            catch { return default; }
+        }
+
+        public static string Sha256Hex(byte[] bytes)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                return string.Concat(sha.ComputeHash(bytes).Select(b => b.ToString("x2")));
         }
 
         private static void WriteBreadcrumb(string projectRoot, GdaiResumeBreadcrumb bc, DateTime nowUtc)
@@ -98,7 +109,13 @@ namespace GDAI.Bridge.Editor.LayerA
             }
             if (count > 1 || op == null)
             {
-                WriteBreadcrumb(projectRoot, new GdaiResumeBreadcrumb { decision = "Refused", reason = "multiple active operations" }, nowUtc);
+                // explicit ambiguous fail-closed — never pick the first of several
+                WriteBreadcrumb(projectRoot, new GdaiResumeBreadcrumb { decision = "Refused", reason = "AmbiguousActiveOperations (" + count + ") — never pick one" }, nowUtc);
+                return Decision.Refused;
+            }
+            if (op.IsStale(nowUtc))
+            {
+                WriteBreadcrumb(projectRoot, new GdaiResumeBreadcrumb { decision = "Refused", operation_id = op.operation_id, reason = "stale operation (older than " + GdaiPlayableOperation.StaleAfterHours + "h) — never auto-resume" }, nowUtc);
                 return Decision.Refused;
             }
 
@@ -115,17 +132,16 @@ namespace GDAI.Bridge.Editor.LayerA
                 return Decision.Refused;
             }
 
-            // real (non-circular) contract-revision reverify: compare the operation's recorded
-            // version to the contract actually imported on disk. If codegen shipped a different
-            // revision than the operation started with, refuse.
-            var onDisk = OnDiskContractVersion(projectRoot);
-            if (string.IsNullOrEmpty(onDisk) || !string.Equals(onDisk, op.playable_contract_version, StringComparison.Ordinal))
+            // real (non-circular) three-fact reverify: compare the operation's recorded schema +
+            // revision + sha256 to the contract actually imported on disk. Any drift → refuse.
+            var onDisk = OnDiskContractIdentity(projectRoot);
+            if (!onDisk.Ok)
             {
-                WriteBreadcrumb(projectRoot, new GdaiResumeBreadcrumb { decision = "Refused", operation_id = op.operation_id, reason = "contract revision mismatch (disk vs operation)" }, nowUtc);
+                WriteBreadcrumb(projectRoot, new GdaiResumeBreadcrumb { decision = "Refused", operation_id = op.operation_id, reason = "on-disk contract missing/invalid" }, nowUtc);
                 return Decision.Refused;
             }
 
-            var verdict = op.CanResume(op.project_id, op.snapshot_id, op.playable_contract_version, tokenPresent: true, out string why);
+            var verdict = op.CanResume(op.project_id, op.snapshot_id, onDisk.Schema, onDisk.Revision, onDisk.Sha256, tokenPresent: true, out string why);
             if (verdict == GdaiPlayableOperation.ResumeVerdict.Terminal)
             {
                 WriteBreadcrumb(projectRoot, new GdaiResumeBreadcrumb { decision = "NotResumable", operation_id = op.operation_id, reason = why }, nowUtc);

@@ -1,5 +1,5 @@
 // AUTO-0Q-P2 · P2-C tests · Canonical scene lifecycle + 5-object composer.
-// Drives the composer with the REAL rev3 contract fixture; verifies component
+// Drives the composer with the REAL rev4 contract fixture; verifies component
 // types by the same string resolution the composer uses (the generated types
 // live in the host's default assembly, not the test asmdef).
 using System.IO;
@@ -22,7 +22,7 @@ namespace GDAI.Bridge.Editor.Tests
 
         private static string FixtureJson()
         {
-            var g = AssetDatabase.FindAssets("PlayableContract.rev3.projectslash-2d874a40");
+            var g = AssetDatabase.FindAssets("PlayableContract.rev4.projectslash-2d874a40");
             return File.ReadAllText(AssetDatabase.GUIDToAssetPath(g[0]));
         }
 
