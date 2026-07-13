@@ -34,6 +34,7 @@ namespace GDAI.Bridge.Editor.LayerA
         public List<SceneObjectSpec> scene_objects = new List<SceneObjectSpec>();
         public List<SceneBindingSpec> scene_bindings = new List<SceneBindingSpec>();
         public List<ValueBindingSpec> value_bindings = new List<ValueBindingSpec>();
+        public CameraSpec camera;
         public List<string> self_checks = new List<string>();
 
         [Serializable] public class CanonicalScene { public string path; public bool add_to_build_settings; }
@@ -63,6 +64,23 @@ namespace GDAI.Bridge.Editor.LayerA
         [Serializable] public class SceneObjectSpec { public string name; public List<string> components = new List<string>(); public string tag; }
         [Serializable] public class SceneBindingSpec { public string component; public string field; public string target_component; public string target_transform; public string target_object; }
         [Serializable] public class ValueBindingSpec { public string component; public string field; public string value_type; public List<string> layers = new List<string>(); }
+        [Serializable] public class Rgba { public float r; public float g; public float b; public float a; }
+        [Serializable] public class Vec3 { public float x; public float y; public float z; }
+        [Serializable] public class WorldBounds { public float width; public float height; }
+        [Serializable] public class CameraSpec
+        {
+            public string object_name; public string projection; public string framing; public string tag;
+            public string clear_flags; public Rgba background; public Vec3 position;
+            public float padding_ratio; public float target_aspect; public WorldBounds world_bounds;
+
+            /// <summary>The fit_arena solve: fits the arena on BOTH axes (no horizontal clipping).</summary>
+            public float SolveOrthographicSize()
+            {
+                float byHeight = world_bounds.height / 2f;
+                float byWidth = world_bounds.width / (2f * target_aspect);
+                return Math.Max(byHeight, byWidth) * (1f + padding_ratio);
+            }
+        }
 
         public class Result
         {
@@ -226,6 +244,23 @@ namespace GDAI.Bridge.Editor.LayerA
             Req(el != null, "value_bindings must set CombatLocatorSystem.enemyLayer");
             Req(el != null && el.value_type == "LayerMask" && el.layers != null && el.layers.Count > 0, "enemyLayer binding must name at least one layer");
             Req(el != null && el.layers.Contains(c.enemy_prefab?.layer ?? ""), "enemyLayer must include the enemy prefab layer");
+
+            // camera fit_arena framing — orthographic 2D with valid arena-derived bounds
+            var cam = c.camera;
+            Req(cam != null, "camera block required");
+            if (cam != null)
+            {
+                Req(cam.object_name == "Main Camera", "camera.object_name must be Main Camera");
+                Req(cam.projection == "orthographic", "camera.projection must be orthographic");
+                Req(cam.framing == "fit_arena", "camera.framing must be fit_arena");
+                Req(cam.tag == "MainCamera", "camera.tag must be MainCamera");
+                Req(cam.clear_flags == "SolidColor", "camera.clear_flags must be SolidColor");
+                Req(cam.background != null, "camera.background required");
+                Req(cam.position != null && cam.position.z < 0f, "camera.position.z must be negative");
+                Req(cam.padding_ratio >= 0f && cam.padding_ratio < 1f, "camera.padding_ratio must be in [0,1)");
+                Req(cam.target_aspect > 0f, "camera.target_aspect must be > 0");
+                Req(cam.world_bounds != null && cam.world_bounds.width > 0f && cam.world_bounds.height > 0f, "camera.world_bounds must be positive");
+            }
         }
     }
 }

@@ -168,6 +168,30 @@
       ]
     }
   ],
+  "camera": {
+    "object_name": "Main Camera",
+    "projection": "orthographic",
+    "framing": "fit_arena",
+    "tag": "MainCamera",
+    "clear_flags": "SolidColor",
+    "background": {
+      "r": 0,
+      "g": 0,
+      "b": 0,
+      "a": 1
+    },
+    "position": {
+      "x": 0,
+      "y": 0,
+      "z": -10
+    },
+    "padding_ratio": 0.1,
+    "target_aspect": 1.7777777777777777,
+    "world_bounds": {
+      "width": 9.6,
+      "height": 5.4
+    }
+  },
   "self_checks": [
     "semantic_bindings",
     "scene_refs",
@@ -175,6 +199,7 @@
     "enemy_prefab",
     "player_movement",
     "enemy_hittable",
+    "camera_framing",
     "alpha"
   ]
 }
