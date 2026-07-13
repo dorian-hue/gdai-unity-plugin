@@ -160,5 +160,25 @@ namespace GDAI.Bridge.Editor.Tests
             }
             finally { if (human != null) Object.DestroyImmediate(human); }
         }
+
+        // G2 · the ownership guard must also see INACTIVE humans — GameObject.Find sees only active
+        // objects, so an inactive same-named human without our marker must still fail closed (never a
+        // silently-created marked twin).
+        [Test]
+        public void Composer_RefusesToAdoptInactiveUnmarkedHumanObject()
+        {
+            GdaiCanonicalScene.EnsureSavedAndInBuild(ScenePath);
+            var human = new GameObject("EnemyManager");
+            human.SetActive(false); // the exact case GameObject.Find misses
+            try
+            {
+                var r = GdaiSceneObjectComposer.Compose(_contract, _contract.profile_id, "2d874a40");
+                Assert.IsFalse(r.Ok, "must refuse even when the same-named unmarked human object is INACTIVE");
+                Assert.IsTrue(r.Errors.Any(e => e.Contains("not GDAI-owned")), "explicit refuse-to-adopt error");
+                Assert.IsNull(human.GetComponent<GdaiGeneratedPlayableMarker>(), "inactive human is never stamped");
+                Assert.IsNull(GdaiSceneObjectComposer.FindOwned("EnemyManager"), "no marked twin created for the refused inactive name");
+            }
+            finally { if (human != null) Object.DestroyImmediate(human); }
+        }
     }
 }

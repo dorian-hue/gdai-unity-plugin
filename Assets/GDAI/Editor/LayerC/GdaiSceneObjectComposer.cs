@@ -162,12 +162,23 @@ namespace GDAI.Bridge.Editor.LayerC
             catch { return tag == "Player" || tag == "MainCamera" || tag == "Untagged"; }
         }
 
-        /// <summary>An object of this name that carries our marker, or null.</summary>
+        /// <summary>An object of this name that carries our marker, or null. Includes INACTIVE
+        /// objects so a previously-created owned object is reused, never duplicated.</summary>
         public static GameObject FindOwned(string name)
         {
-            foreach (var m in UnityEngine.Object.FindObjectsByType<GdaiGeneratedPlayableMarker>(FindObjectsSortMode.None))
+            foreach (var m in UnityEngine.Object.FindObjectsByType<GdaiGeneratedPlayableMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None))
                 if (m.gameObject.name == name) return m.gameObject;
             return null;
+        }
+
+        /// <summary>True if a same-named scene object WITHOUT our marker exists — active OR inactive.
+        /// GameObject.Find only sees active objects, so the ownership guard must scan inactive too.</summary>
+        private static bool UnmarkedStrayExists(string name)
+        {
+            foreach (var t in UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (t.gameObject.name == name && t.GetComponent<GdaiGeneratedPlayableMarker>() == null)
+                    return true;
+            return false;
         }
 
         private static GameObject FindOwnedOrCreate(string name, Vector3 pos, string profileId, string snapshotId, string role, out bool created)
@@ -175,9 +186,8 @@ namespace GDAI.Bridge.Editor.LayerC
             created = false;
             var owned = FindOwned(name);
             if (owned != null) return owned;
-            // refuse to adopt a same-named object that lacks our marker
-            var stray = GameObject.Find(name);
-            if (stray != null && stray.GetComponent<GdaiGeneratedPlayableMarker>() == null) return null;
+            // refuse to adopt a same-named object that lacks our marker (active OR inactive human object)
+            if (UnmarkedStrayExists(name)) return null;
 
             var go = new GameObject(name);
             Undo.RegisterCreatedObjectUndo(go, "GDAI create " + name);
