@@ -1,3 +1,21 @@
+## v0.1.0-alpha.8.9 (2026-07-14)
+
+- Fix: the composed playable export now fully passes its own shipped structure
+  standard (`validate_project_standard.py --stage playable`, 47/47). Two parts,
+  both aligning the ownership manifest with the standard authored in
+  `docs/GDAI/PROJECT-STRUCTURE.md`:
+  1. The manifest is written to
+     `Assets/GDAI_Project/Generated/Manifests/GDAIPlayableAssets.json` (the
+     documented location, parallel to the `Input/` and `Prefabs/` subdirs) —
+     8.8 wrote it to the `Generated/` root.
+  2. The manifest now carries a top-level `profile_id` and a flat `assets[]`
+     list of the owned files (input asset, enemy prefab, canonical scene) — the
+     "exact files listed in the manifest" the docs describe. Purely additive;
+     the richer typed records and per-object provenance are unchanged.
+- Surfaced by the P7b real-product remote-tag TREE. No behavior change to the
+  playable scene: receipt/PlayMode/idempotency identical; the receipt's
+  independent readback and ownership cross-check follow the manifest constant.
+
 ## v0.1.0-alpha.8.8 (2026-07-14)
 
 - Fix: the `Complete GDAI Export / Sync Project` CTA now composes the playable

@@ -32,6 +32,7 @@ namespace GDAI.Bridge.Editor.LayerC
         // be rejected, not silently pass the schema check. Write() always sets it explicitly.
         public string schema_version;
         public string project_id;
+        public string profile_id;
         public string snapshot_id;
         public int contract_revision;
         public string contract_sha256;
@@ -39,6 +40,10 @@ namespace GDAI.Bridge.Editor.LayerC
         public GdaiOwnedAssetRecord input_asset;
         public GdaiOwnedAssetRecord enemy_prefab;
         public GdaiOwnedAssetRecord canonical_scene;
+        // Flat list of the owned file assets (input asset, enemy prefab, canonical scene) — the
+        // "exact files listed in the manifest" the structure standard documents. The typed records
+        // above remain the primary handles; this is the enumerable projection consumers iterate.
+        public List<GdaiOwnedAssetRecord> assets = new List<GdaiOwnedAssetRecord>();
         public List<GdaiOwnedObjectRecord> owned_scene_objects = new List<GdaiOwnedObjectRecord>();
 
         public const string SchemaVersion = "gdai.unity.playable_assets.v1";
@@ -47,7 +52,9 @@ namespace GDAI.Bridge.Editor.LayerC
     public static class GdaiPlayableOwnershipManifest
     {
         // Under the owned generated root so the coherent clean-replace regenerates it.
-        public const string ManifestPath = "Assets/GDAI_Project/Generated/GDAIPlayableAssets.json";
+        // Canonical structure standard (docs/GDAI/PROJECT-STRUCTURE.md + validate_project_standard.py):
+        // the playable ownership record lives in the Manifests/ subdir, parallel to Input/ and Prefabs/.
+        public const string ManifestPath = "Assets/GDAI_Project/Generated/Manifests/GDAIPlayableAssets.json";
 
         private static string ProjectRoot() => Directory.GetParent(Application.dataPath).FullName;
         private static string AbsPath(string assetPath) => Path.GetFullPath(Path.Combine(ProjectRoot(), assetPath));
@@ -72,6 +79,7 @@ namespace GDAI.Bridge.Editor.LayerC
                 {
                     schema_version = GdaiPlayableAssetsManifest.SchemaVersion,
                     project_id = projectId,
+                    profile_id = contract.profile_id,
                     snapshot_id = snapshotId,
                     contract_revision = contract.contract_revision,
                     contract_sha256 = contractSha256,
@@ -80,6 +88,10 @@ namespace GDAI.Bridge.Editor.LayerC
                     enemy_prefab = AssetRecord("enemy_prefab", contract.enemy_prefab?.asset_path),
                     canonical_scene = AssetRecord("canonical_scene", scenePath),
                 };
+                // enumerable projection of the owned file assets (each a real path + meta) — the
+                // "exact files" the structure standard lists in the manifest.
+                m.assets = new[] { m.input_asset, m.enemy_prefab, m.canonical_scene }
+                    .Where(a => a != null && !string.IsNullOrEmpty(a.path)).ToList();
                 foreach (var marker in UnityEngine.Object.FindObjectsByType<GdaiGeneratedPlayableMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None))
                     m.owned_scene_objects.Add(new GdaiOwnedObjectRecord
                     {

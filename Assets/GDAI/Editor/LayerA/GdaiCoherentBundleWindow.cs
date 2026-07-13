@@ -46,7 +46,7 @@ namespace GDAI.Bridge.Editor.LayerA
 
         // MVP-C · device pairing + scoped token + selectors
         private const string DefaultFunctionsBase = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1";
-        private const string PluginVersion = "0.1.0-alpha.8.8";
+        private const string PluginVersion = "0.1.0-alpha.8.9";
         private const string PrefFunctionsBase = "GDAI_MvpC_FunctionsBase";
         private const string PrefPluginToken = "GDAI_MvpC_PluginToken";   // scoped gdai_plugin_v1.* token
         private const string PrefSelProject = "GDAI_MvpC_SelectedProjectId";
