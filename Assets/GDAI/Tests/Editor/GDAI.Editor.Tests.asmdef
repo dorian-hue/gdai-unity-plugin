@@ -3,6 +3,7 @@
     "rootNamespace": "GDAI.Bridge.Editor.Tests",
     "references": [
         "GDAI.Editor",
+        "GDAI.Runtime",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],
