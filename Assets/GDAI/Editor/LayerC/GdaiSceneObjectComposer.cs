@@ -1,7 +1,7 @@
 // =====================================================================================
 // GDAI Unity Plugin · AUTO-0Q-P2 · P2-C · Scene-object graph composer (Editor, Layer C).
 //
-// Creates the exact five canonical host objects the rev3 contract declares —
+// Creates the exact five canonical host objects the rev4 contract declares —
 // Player, InputManager, GameIntegrationController, EnemyManager, Main Camera —
 // BEFORE any binder runs (binders bind existing objects, they never create them).
 // Every created object is stamped with GdaiGeneratedPlayableMarker so a later Sync

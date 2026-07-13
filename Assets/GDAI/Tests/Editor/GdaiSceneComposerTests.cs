@@ -127,19 +127,38 @@ namespace GDAI.Bridge.Editor.Tests
             Assert.AreEqual(GdaiSceneObjectComposer.ResolveOutcome.Resolved, oOk);
         }
 
-        [Test]
-        public void Composer_RefusesToAdoptUnmarkedHumanObject()
+        // G2 · every canonical name: a same-named UNMARKED human object must be
+        // preserved verbatim and NEVER adopted, stamped, renamed, re-componented, or
+        // shadowed by a marked twin. Covers Player, Main Camera, InputManager,
+        // GameIntegrationController, EnemyManager (same-path prefab is covered by the
+        // enemy-prefab binder tests — the composer never writes prefabs).
+        [TestCase("Player")]
+        [TestCase("Main Camera")]
+        [TestCase("InputManager")]
+        [TestCase("GameIntegrationController")]
+        [TestCase("EnemyManager")]
+        public void Composer_PreservesUnmarkedHumanObject_NeverAdopts(string canonicalName)
         {
             GdaiCanonicalScene.EnsureSavedAndInBuild(ScenePath);
-            // a human-made 'Player' with no marker must NOT be adopted
-            var human = new GameObject("Player");
+            var human = new GameObject(canonicalName);
+            human.AddComponent<BoxCollider2D>();      // a benign human component to prove nothing is stripped
+            int compCountBefore = human.GetComponents<Component>().Length;
             try
             {
                 var r = GdaiSceneObjectComposer.Compose(_contract, _contract.profile_id, "2d874a40");
-                Assert.IsFalse(r.Ok, "must refuse to adopt an unmarked same-named object");
-                Assert.IsTrue(r.Errors.Any(e => e.Contains("not GDAI-owned")));
+                Assert.IsFalse(r.Ok, "must refuse when a same-named unmarked human object exists");
+                Assert.IsTrue(r.Errors.Any(e => e.Contains("not GDAI-owned")), "explicit refuse-to-adopt error");
+
+                // PRESERVED: the same C# reference stays alive, unmarked, unchanged, not renamed,
+                // with no marked twin (holding `human` IS the identity anchor — no instance-id needed).
+                Assert.IsTrue(human != null, "human object must not be destroyed");
+                Assert.IsNull(human.GetComponent<GdaiGeneratedPlayableMarker>(), "the human object is never stamped");
+                Assert.IsNotNull(human.GetComponent<BoxCollider2D>(), "human components are untouched");
+                Assert.AreEqual(compCountBefore, human.GetComponents<Component>().Length, "no components added to the human object");
+                Assert.AreEqual(canonicalName, human.name, "human object is not renamed");
+                Assert.IsNull(GdaiSceneObjectComposer.FindOwned(canonicalName), "no GDAI-marked twin is created for a refused name");
             }
-            finally { Object.DestroyImmediate(human); }
+            finally { if (human != null) Object.DestroyImmediate(human); }
         }
     }
 }
