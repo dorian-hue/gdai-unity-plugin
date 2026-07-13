@@ -37,6 +37,30 @@ namespace GDAI.Bridge.Editor.LayerC
 
         private static string Root() => Directory.GetParent(Application.dataPath).FullName;
 
+        public enum ImportedContractOutcome { Composed, NotPresent, Failed }
+
+        /// <summary>
+        /// Window-CTA seam: compose from the contract the bundle import just wrote (if any).
+        /// Reads Assets/GDAI_Generated/GDAI_PlayableContract.json, parses fail-closed, pins its
+        /// sha256, and runs the full composer. NotPresent = pre-rev4 snapshot (caller falls back
+        /// to the legacy minimal scene prep); Failed = contract present but invalid or the
+        /// composition/receipt did not PASS (caller must fail the sync, never continue silently).
+        /// </summary>
+        public static ImportedContractOutcome RunFromImportedContract(string projectId, string snapshotId,
+            string scenePath, DateTime nowUtc, out Result result, out string detail)
+        {
+            result = null; detail = null;
+            string path = Path.Combine(Root(), "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
+            if (!File.Exists(path)) { detail = "no playable contract in bundle (pre-rev4 snapshot)"; return ImportedContractOutcome.NotPresent; }
+            byte[] bytes = File.ReadAllBytes(path);
+            var parse = GdaiPlayableContract.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            if (!parse.Ok) { detail = "contract invalid: " + parse.Summary; return ImportedContractOutcome.Failed; }
+            string sha = GdaiPlayableResume.Sha256Hex(bytes);
+            result = Run(parse.Contract, projectId, snapshotId, sha, scenePath, nowUtc);
+            detail = result.Completed ? ("receipt " + result.Receipt.status) : result.Error;
+            return result.Completed ? ImportedContractOutcome.Composed : ImportedContractOutcome.Failed;
+        }
+
         /// <summary>
         /// Run the full static composition. Sprites are resolved from the imported-asset registry by the
         /// contract's entity ids when present (null is fine — the enemy collider still gets a non-zero

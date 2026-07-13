@@ -191,6 +191,33 @@ namespace GDAI.Bridge.Editor.Tests
             StringAssert.Contains("sha256", e2);
         }
 
+        // §13 window-CTA seam: with the imported bundle's contract on disk (the host carries the
+        // rev4 fixture at the real path), one seam call composes and returns a PASS receipt.
+        [Test]
+        public void RunFromImportedContract_Composes_WhenContractOnDisk()
+        {
+            var outcome = GdaiPlayableComposerCta.RunFromImportedContract(PID, SNAP, ScenePath, T, out var res, out string detail);
+            Assert.AreEqual(GdaiPlayableComposerCta.ImportedContractOutcome.Composed, outcome, detail);
+            Assert.IsTrue(res.Completed, detail);
+            Assert.AreEqual("PASS", res.Receipt.status, string.Join("; ", res.Receipt.failures));
+        }
+
+        // pre-rev4 snapshot: no contract in the bundle → NotPresent (caller falls back to legacy prep).
+        [Test]
+        public void RunFromImportedContract_NotPresent_WhenNoContract()
+        {
+            string root = Path.GetDirectoryName(Application.dataPath);
+            string cpath = Path.Combine(root, "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
+            string tmp = cpath + ".s13bak";
+            File.Move(cpath, tmp);
+            try
+            {
+                var outcome = GdaiPlayableComposerCta.RunFromImportedContract(PID, SNAP, ScenePath, T, out _, out string detail);
+                Assert.AreEqual(GdaiPlayableComposerCta.ImportedContractOutcome.NotPresent, outcome, detail);
+            }
+            finally { File.Move(tmp, cpath); }
+        }
+
         [Test]
         public void Receipt_InputRef_MustMatchPinnedAction_NotJustNonNull()
         {

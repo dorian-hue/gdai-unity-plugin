@@ -1122,8 +1122,28 @@ namespace GDAI.Bridge.Editor.LayerA
                 GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
                 GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
 
-                // 10: minimal playable scene preparation (existing Layer C seam).
-                GDAI.Bridge.Editor.LayerC.GdaiMinimalPlayableSceneBuilder.PrepareMenu();
+                // 10: playable composition. AUTO-0Q: when the imported bundle carries the rev4
+                //     playable contract, the zero-manual composer OWNS scene construction (canonical
+                //     objects, input asset, enemy prefab, bindings, camera, AudioListener, save,
+                //     ownership manifest, hard receipt — operation Completed only on PASS). It must
+                //     run INSTEAD of the legacy minimal scene prep, whose unmarked objects the
+                //     composer would rightly refuse. Pre-rev4 snapshots keep the legacy path.
+                var composed = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunFromImportedContract(
+                    _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
+                    out var playableResult, out string playableDetail);
+                switch (composed)
+                {
+                    case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed:
+                        Debug.Log("[GDAI][CompleteSync] playable composer: " + playableDetail);
+                        break;
+                    case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.NotPresent:
+                        Debug.Log("[GDAI][CompleteSync] " + playableDetail + " — legacy minimal scene prep");
+                        GDAI.Bridge.Editor.LayerC.GdaiMinimalPlayableSceneBuilder.PrepareMenu();
+                        break;
+                    default:
+                        failPhase = "PLAYABLE_COMPOSE: " + playableDetail;
+                        return;
+                }
 
                 // 11-12: save assets + open scene.
                 AssetDatabase.SaveAssets();
