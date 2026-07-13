@@ -1,3 +1,14 @@
+## v0.1.0-alpha.8.7 (2026-07-14)
+
+- Fix: the `Complete GDAI Export / Sync Project` CTA now runs the zero-manual
+  playable composer when the imported bundle carries the rev4 playable
+  contract (contract-conditional; pre-rev4 snapshots keep the legacy minimal
+  scene prep). In 8.6 the composer shipped fully tested but was not invoked by
+  the window CTA, so a one-click sync never composed the playable scene.
+- New window seam `GdaiPlayableComposerCta.RunFromImportedContract` (parse
+  fail-closed, sha256-pinned identity, full composer + hard receipt; a
+  compose/receipt failure fails the sync). EditMode suite: 89 tests.
+
 ## v0.1.0-alpha.8.6 (2026-07-14)
 
 - Zero-manual playable composer consuming the frozen
