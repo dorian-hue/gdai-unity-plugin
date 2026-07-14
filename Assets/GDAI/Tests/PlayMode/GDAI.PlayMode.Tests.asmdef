@@ -1,6 +1,6 @@
 {
-    "name": "GDAI.Editor.Tests",
-    "rootNamespace": "GDAI.Bridge.Editor.Tests",
+    "name": "GDAI.PlayMode.Tests",
+    "rootNamespace": "GDAI.Bridge.PlayMode.Tests",
     "references": [
         "GDAI.Editor",
         "GDAI.Runtime",
@@ -14,8 +14,7 @@
     "allowUnsafeCode": false,
     "overrideReferences": true,
     "precompiledReferences": [
-        "nunit.framework.dll",
-        "Newtonsoft.Json.dll"
+        "nunit.framework.dll"
     ],
     "autoReferenced": false,
     "defineConstraints": [

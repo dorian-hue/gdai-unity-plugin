@@ -1,0 +1,370 @@
+{
+  "schema": "gdai.animation.materialization_package.v1",
+  "package_class": "TEST_ONLY",
+  "package_id": "TESTONLY-norm-ronin-4x6-v1",
+  "package_content_sha256": "a555c21c525f049f860ce105bee1bb84d1d0c7c7b1356554b7a88c223a590252",
+  "profile_id": "JASON_RONIN_4X6_EXPERIMENT_V1",
+  "profile_version": 1,
+  "entity_id": "ronin",
+  "adoption": {
+    "adoption_event_id": "adopt-TESTONLY-001",
+    "adopted": true,
+    "revoked": false,
+    "adopted_at": "2026-07-14T00:00:00Z",
+    "source_generation_event_id": "gen-TESTONLY-001"
+  },
+  "qa": {
+    "qa_event_id": "qa-TESTONLY-001",
+    "status": "PASSED",
+    "gate_version": "semantic-qa-gate.v1"
+  },
+  "provider_provenance": {
+    "provider_id": "gdai_testonly_offline_fixture",
+    "request_digest": null,
+    "capability_status": "UNKNOWN",
+    "license_status": "UNKNOWN"
+  },
+  "sheet": {
+    "role": "RAW_SPRITE_SHEET",
+    "content_sha256": "9d6a95bf61b6f7a7fe9db29d15ec0254fa80169085c3256fd5aeae1ef66fb049",
+    "cell_width": 64,
+    "cell_height": 64,
+    "columns": 4,
+    "rows": 6,
+    "alpha": "STRAIGHT"
+  },
+  "import_policy": {
+    "pixels_per_unit": 64,
+    "pivot": {
+      "alignment": "Center",
+      "x": 0.5,
+      "y": 0.5
+    },
+    "filter_mode": "Point",
+    "nominal_fps": 12
+  },
+  "clips": [
+    {
+      "clip_id": "idle__front",
+      "action": "idle",
+      "direction": "front",
+      "frame_count": 4,
+      "nominal_fps": 12,
+      "loop": true,
+      "pivot": null,
+      "events": []
+    },
+    {
+      "clip_id": "idle__back",
+      "action": "idle",
+      "direction": "back",
+      "frame_count": 4,
+      "nominal_fps": 12,
+      "loop": true,
+      "pivot": null,
+      "events": []
+    },
+    {
+      "clip_id": "walk__front",
+      "action": "walk",
+      "direction": "front",
+      "frame_count": 4,
+      "nominal_fps": 12,
+      "loop": true,
+      "pivot": null,
+      "events": []
+    },
+    {
+      "clip_id": "walk__back",
+      "action": "walk",
+      "direction": "back",
+      "frame_count": 4,
+      "nominal_fps": 12,
+      "loop": true,
+      "pivot": null,
+      "events": []
+    },
+    {
+      "clip_id": "slash__front",
+      "action": "slash",
+      "direction": "front",
+      "frame_count": 4,
+      "nominal_fps": 12,
+      "loop": false,
+      "pivot": null,
+      "events": [
+        {
+          "kind": "HIT",
+          "frame_index": 1,
+          "semantic": "OPEN",
+          "cancel_on_interrupt": true,
+          "payload_ref": null
+        },
+        {
+          "kind": "HIT",
+          "frame_index": 2,
+          "semantic": "CLOSE",
+          "cancel_on_interrupt": true,
+          "payload_ref": null
+        }
+      ]
+    },
+    {
+      "clip_id": "slash__back",
+      "action": "slash",
+      "direction": "back",
+      "frame_count": 4,
+      "nominal_fps": 12,
+      "loop": false,
+      "pivot": null,
+      "events": [
+        {
+          "kind": "HIT",
+          "frame_index": 1,
+          "semantic": "OPEN",
+          "cancel_on_interrupt": true,
+          "payload_ref": null
+        },
+        {
+          "kind": "HIT",
+          "frame_index": 2,
+          "semantic": "CLOSE",
+          "cancel_on_interrupt": true,
+          "payload_ref": null
+        }
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "cell_id": "idle__front.f000",
+      "sprite_name": "GDAI__ronin__idle__front__f000",
+      "clip_id": "idle__front",
+      "frame_index": 0,
+      "direction": "front",
+      "row": 0,
+      "column": 0
+    },
+    {
+      "cell_id": "idle__front.f001",
+      "sprite_name": "GDAI__ronin__idle__front__f001",
+      "clip_id": "idle__front",
+      "frame_index": 1,
+      "direction": "front",
+      "row": 0,
+      "column": 1
+    },
+    {
+      "cell_id": "idle__front.f002",
+      "sprite_name": "GDAI__ronin__idle__front__f002",
+      "clip_id": "idle__front",
+      "frame_index": 2,
+      "direction": "front",
+      "row": 0,
+      "column": 2
+    },
+    {
+      "cell_id": "idle__front.f003",
+      "sprite_name": "GDAI__ronin__idle__front__f003",
+      "clip_id": "idle__front",
+      "frame_index": 3,
+      "direction": "front",
+      "row": 0,
+      "column": 3
+    },
+    {
+      "cell_id": "idle__back.f000",
+      "sprite_name": "GDAI__ronin__idle__back__f000",
+      "clip_id": "idle__back",
+      "frame_index": 0,
+      "direction": "back",
+      "row": 1,
+      "column": 0
+    },
+    {
+      "cell_id": "idle__back.f001",
+      "sprite_name": "GDAI__ronin__idle__back__f001",
+      "clip_id": "idle__back",
+      "frame_index": 1,
+      "direction": "back",
+      "row": 1,
+      "column": 1
+    },
+    {
+      "cell_id": "idle__back.f002",
+      "sprite_name": "GDAI__ronin__idle__back__f002",
+      "clip_id": "idle__back",
+      "frame_index": 2,
+      "direction": "back",
+      "row": 1,
+      "column": 2
+    },
+    {
+      "cell_id": "idle__back.f003",
+      "sprite_name": "GDAI__ronin__idle__back__f003",
+      "clip_id": "idle__back",
+      "frame_index": 3,
+      "direction": "back",
+      "row": 1,
+      "column": 3
+    },
+    {
+      "cell_id": "walk__front.f000",
+      "sprite_name": "GDAI__ronin__walk__front__f000",
+      "clip_id": "walk__front",
+      "frame_index": 0,
+      "direction": "front",
+      "row": 2,
+      "column": 0
+    },
+    {
+      "cell_id": "walk__front.f001",
+      "sprite_name": "GDAI__ronin__walk__front__f001",
+      "clip_id": "walk__front",
+      "frame_index": 1,
+      "direction": "front",
+      "row": 2,
+      "column": 1
+    },
+    {
+      "cell_id": "walk__front.f002",
+      "sprite_name": "GDAI__ronin__walk__front__f002",
+      "clip_id": "walk__front",
+      "frame_index": 2,
+      "direction": "front",
+      "row": 2,
+      "column": 2
+    },
+    {
+      "cell_id": "walk__front.f003",
+      "sprite_name": "GDAI__ronin__walk__front__f003",
+      "clip_id": "walk__front",
+      "frame_index": 3,
+      "direction": "front",
+      "row": 2,
+      "column": 3
+    },
+    {
+      "cell_id": "walk__back.f000",
+      "sprite_name": "GDAI__ronin__walk__back__f000",
+      "clip_id": "walk__back",
+      "frame_index": 0,
+      "direction": "back",
+      "row": 3,
+      "column": 0
+    },
+    {
+      "cell_id": "walk__back.f001",
+      "sprite_name": "GDAI__ronin__walk__back__f001",
+      "clip_id": "walk__back",
+      "frame_index": 1,
+      "direction": "back",
+      "row": 3,
+      "column": 1
+    },
+    {
+      "cell_id": "walk__back.f002",
+      "sprite_name": "GDAI__ronin__walk__back__f002",
+      "clip_id": "walk__back",
+      "frame_index": 2,
+      "direction": "back",
+      "row": 3,
+      "column": 2
+    },
+    {
+      "cell_id": "walk__back.f003",
+      "sprite_name": "GDAI__ronin__walk__back__f003",
+      "clip_id": "walk__back",
+      "frame_index": 3,
+      "direction": "back",
+      "row": 3,
+      "column": 3
+    },
+    {
+      "cell_id": "slash__front.f000",
+      "sprite_name": "GDAI__ronin__slash__front__f000",
+      "clip_id": "slash__front",
+      "frame_index": 0,
+      "direction": "front",
+      "row": 4,
+      "column": 0
+    },
+    {
+      "cell_id": "slash__front.f001",
+      "sprite_name": "GDAI__ronin__slash__front__f001",
+      "clip_id": "slash__front",
+      "frame_index": 1,
+      "direction": "front",
+      "row": 4,
+      "column": 1
+    },
+    {
+      "cell_id": "slash__front.f002",
+      "sprite_name": "GDAI__ronin__slash__front__f002",
+      "clip_id": "slash__front",
+      "frame_index": 2,
+      "direction": "front",
+      "row": 4,
+      "column": 2
+    },
+    {
+      "cell_id": "slash__front.f003",
+      "sprite_name": "GDAI__ronin__slash__front__f003",
+      "clip_id": "slash__front",
+      "frame_index": 3,
+      "direction": "front",
+      "row": 4,
+      "column": 3
+    },
+    {
+      "cell_id": "slash__back.f000",
+      "sprite_name": "GDAI__ronin__slash__back__f000",
+      "clip_id": "slash__back",
+      "frame_index": 0,
+      "direction": "back",
+      "row": 5,
+      "column": 0
+    },
+    {
+      "cell_id": "slash__back.f001",
+      "sprite_name": "GDAI__ronin__slash__back__f001",
+      "clip_id": "slash__back",
+      "frame_index": 1,
+      "direction": "back",
+      "row": 5,
+      "column": 1
+    },
+    {
+      "cell_id": "slash__back.f002",
+      "sprite_name": "GDAI__ronin__slash__back__f002",
+      "clip_id": "slash__back",
+      "frame_index": 2,
+      "direction": "back",
+      "row": 5,
+      "column": 2
+    },
+    {
+      "cell_id": "slash__back.f003",
+      "sprite_name": "GDAI__ronin__slash__back__f003",
+      "clip_id": "slash__back",
+      "frame_index": 3,
+      "direction": "back",
+      "row": 5,
+      "column": 3
+    }
+  ],
+  "normalization": {
+    "source_schema": "gdai.animation_provider_request.v1",
+    "source_package_id": "TESTONLY-ronin-4x6-src",
+    "source_axis_origin": "TOP_LEFT",
+    "adapter_version": "t4-adapter.v1",
+    "axis_convention": "CANONICAL_ROW_MAJOR"
+  },
+  "materialization_target": {
+    "root": "Assets/GDAI_Project/Generated/Animations",
+    "sprites_dir": "Sprites",
+    "clips_dir": "Clips",
+    "controllers_dir": "Controllers",
+    "ownership_label": "GDAI_Owned_Animation"
+  }
+}
