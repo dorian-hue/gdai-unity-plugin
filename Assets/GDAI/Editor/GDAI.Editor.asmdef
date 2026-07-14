@@ -5,7 +5,8 @@
         "GDAI.Runtime",
         "Unity.Newtonsoft.Json",
         "Unity.TextMeshPro",
-        "UnityEngine.UI"
+        "UnityEngine.UI",
+        "Unity.2D.Sprite.Editor"
     ],
     "includePlatforms": [
         "Editor"
@@ -16,6 +17,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.2d.sprite",
+            "expression": "1.0.0",
+            "define": "GDAI_HAS_2D_SPRITE"
+        }
+    ],
     "noEngineReferences": false
 }

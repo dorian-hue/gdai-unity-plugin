@@ -46,7 +46,18 @@ namespace GDAI.Bridge.Editor.LayerC
         public List<GdaiOwnedAssetRecord> assets = new List<GdaiOwnedAssetRecord>();
         public List<GdaiOwnedObjectRecord> owned_scene_objects = new List<GdaiOwnedObjectRecord>();
 
+        // T4 Stage-1A additive (0E-03 Manifest v2): OPTIONAL animation ownership section. Absent/null
+        // in every v1 manifest AND in playable-only v2 manifests ("this profile owns no animation
+        // assets"). NullValueHandling keeps the playable Write() output byte-identical to 8.9 when no
+        // animation was materialized. Written ONLY by GdaiAnimationMaterializer after guard approval.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public Animation.GdaiAnimationAssetsSection animation_assets;
+
         public const string SchemaVersion = "gdai.unity.playable_assets.v1";
+        // T4 Stage-1A (0E-03): a manifest carrying animation_assets is v2. Verify accepts {v1, v2};
+        // a v1-only plugin build refuses a v2 file (correct fail-closed: it cannot reason about
+        // animation ownership and must not treat those assets as unowned).
+        public const string SchemaVersionV2 = "gdai.unity.playable_assets.v2";
     }
 
     public static class GdaiPlayableOwnershipManifest
@@ -142,7 +153,11 @@ namespace GDAI.Bridge.Editor.LayerC
             error = null;
             var m = Load();
             if (m == null) { error = "ownership manifest missing"; return false; }
-            if (m.schema_version != GdaiPlayableAssetsManifest.SchemaVersion) { error = "manifest schema mismatch: " + (m.schema_version ?? "<absent>"); return false; }
+            // T4 Stage-1A additive: accept v1 AND v2 (a v2 file differs only by the optional
+            // animation_assets section, which the animation verifier owns). Anything else fails closed.
+            if (m.schema_version != GdaiPlayableAssetsManifest.SchemaVersion &&
+                m.schema_version != GdaiPlayableAssetsManifest.SchemaVersionV2)
+            { error = "manifest schema mismatch: " + (m.schema_version ?? "<absent>"); return false; }
 
             // session/contract identity: a manifest from a different composition is refused, so a stale
             // or foreign file can never lend ownership to the current scene.
