@@ -107,6 +107,43 @@ namespace GDAI.Bridge.Editor.Tests
             skel.ValidateForMaterialization("TEST_ONLY");
         }
 
+        // ── Phase 2: canonical machine-readable schema authority (cross-repo, byte-identical) ──
+        const string CanonicalSchemaSha = "c21fcd98bda3f30b9057774563374fb60838cde102163926a7274627593de9f8";
+
+        [Test]
+        public void Schema_CanonicalFileSha_IsPinned_CrossRepoAuthority()
+        {
+            Assert.AreEqual(CanonicalSchemaSha, GdaiAnimSchemaValidator.SchemaFileSha256(),
+                "Plugin schema file drifted from the pinned cross-repo SHA (must equal the Flowcraft mirror)");
+        }
+
+        [Test]
+        public void Schema_IncomingFixturePackages_ValidateAgainstCanonicalSchema_BothShapes()
+        {
+            var schema = GdaiAnimSchemaValidator.LoadSchema();
+            foreach (var f in new[] { "TESTONLY-norm-ronin-4x6-v1.json", "TESTONLY-norm-skeleton-4x5-v1.json" })
+            {
+                var pkg = GdaiAnimJson.ParseObject(LoadPackageJson(f));
+                var errs = GdaiAnimSchemaValidator.Validate(pkg, schema);
+                Assert.IsEmpty(errs, f + " must satisfy the canonical schema: " + string.Join("; ", errs));
+            }
+        }
+
+        [Test]
+        public void Schema_Drift_DeterministicFailure()
+        {
+            var schema = GdaiAnimSchemaValidator.LoadSchema();
+            var pkg = GdaiAnimJson.ParseObject(LoadPackageJson("TESTONLY-norm-ronin-4x6-v1.json"));
+            var extra = (JObject)pkg.DeepClone(); extra["unexpected_field"] = 1;
+            Assert.IsTrue(GdaiAnimSchemaValidator.Validate(extra, schema).Any(e => e.Contains("additional property 'unexpected_field'")));
+            var badClass = (JObject)pkg.DeepClone(); badClass["package_class"] = "SANDBOX";
+            Assert.IsTrue(GdaiAnimSchemaValidator.Validate(badClass, schema).Any(e => e.Contains("enum")));
+            var badName = (JObject)pkg.DeepClone(); ((JArray)badName["cells"])[0]["sprite_name"] = "not_owned";
+            Assert.IsTrue(GdaiAnimSchemaValidator.Validate(badName, schema).Any(e => e.Contains("pattern")));
+            var badRoot = (JObject)pkg.DeepClone(); badRoot["materialization_target"]["root"] = "Assets/Elsewhere";
+            Assert.IsTrue(GdaiAnimSchemaValidator.Validate(badRoot, schema).Any(e => e.Contains("const")));
+        }
+
         // ── Option B fixture proof: byte SHA + decoded pixel semantics + failure codes ──
         [Test]
         public void Fixture_GoldenByteAndPixelSemantics_BothShapes_Pass()
@@ -280,6 +317,85 @@ namespace GDAI.Bridge.Editor.Tests
             var plan = GdaiPreMutationGuard.BuildFixedSetPlan(p);
             Assert.IsFalse(GdaiPreMutationGuard.Evaluate(p, "TEST_ONLY", plan, new List<string> { "GDAI__ronin__idle__front__f000" }, out _, out var code));
             StringAssert.StartsWith("STOP_STAGE_1A_SCOPE_BREACH", code);
+        }
+
+        // ── audit fix #1: a same-profile SUBSET package is refused PRE-write (no post-reslice prune) ──
+        [Test]
+        public void SubsetPackage_RefusedPreWrite_PriorAssetsByteIdentical()
+        {
+            WriteBaselineV1Manifest();
+            Assert.IsTrue(RunRonin().ok, "first (full) materialization must pass");
+
+            string sheetPath = "Assets/GDAI_Project/Generated/Animations/Sprites/GDAI__ronin.png";
+            string clipPath = "Assets/GDAI_Project/Generated/Animations/Clips/GDAI__ronin__slash__back.anim";
+            var fidsBefore = FileIds(sheetPath);
+            byte[] clipBytesBefore = File.ReadAllBytes(Path.Combine(ProjectRoot(), clipPath));
+            Assert.AreEqual(24, fidsBefore.Count);
+
+            // build a valid SUBSET: drop the last clip (slash__back, row 5) + its 4 cells; recompute hash.
+            var pkg = GdaiAnimJson.ParseObject(LoadPackageJson("TESTONLY-norm-ronin-4x6-v1.json"));
+            var clips = (JArray)pkg["clips"];
+            string drop = (string)clips[clips.Count - 1]["clip_id"];
+            clips.RemoveAt(clips.Count - 1);
+            var cells = (JArray)pkg["cells"];
+            for (int i = cells.Count - 1; i >= 0; i--) if ((string)cells[i]["clip_id"] == drop) cells.RemoveAt(i);
+            pkg["package_id"] = "TESTONLY-norm-ronin-4x6-v1-subset";
+            pkg["package_content_sha256"] = "";
+            pkg["package_content_sha256"] = GdaiAnimJson.PackageContentSha256(pkg);
+
+            var r = GdaiAnimationMaterializer.Run(pkg.ToString(), FixtureAbs(RoninPng), "TEST_ONLY");
+            Assert.IsFalse(r.ok, "a subset (removal) package must be refused");
+            StringAssert.StartsWith("STOP_STAGE_1A_SCOPE_BREACH", r.error, "refused by the removal wall, not a post-write prune");
+
+            // prior assets byte-identical: NO sub-sprite was pruned, NO clip rewritten
+            CollectionAssert.AreEqual(fidsBefore, FileIds(sheetPath), "all 24 sub-sprite fileIDs intact (no prune)");
+            CollectionAssert.AreEqual(clipBytesBefore, File.ReadAllBytes(Path.Combine(ProjectRoot(), clipPath)), "dropped clip's asset untouched");
+            Assert.AreEqual(24, AssetDatabase.LoadAllAssetRepresentationsAtPath(sheetPath).OfType<Sprite>().Count());
+        }
+
+        // ── audit fix #3: declared grid must tile the real sheet (shipping path, not just tests) ──
+        [Test]
+        public void GridMismatch_RefusedBeforeSlicing()
+        {
+            WriteBaselineV1Manifest();
+            var pkg = GdaiAnimJson.ParseObject(LoadPackageJson("TESTONLY-norm-ronin-4x6-v1.json"));
+            // same golden sheet (hash unchanged) but declare a grid that does NOT tile 256x384
+            pkg["sheet"]["columns"] = 5; // 5*64=320 != 256
+            pkg["package_content_sha256"] = "";
+            pkg["package_content_sha256"] = GdaiAnimJson.PackageContentSha256(pkg);
+            var r = GdaiAnimationMaterializer.Run(pkg.ToString(), FixtureAbs(RoninPng), "TEST_ONLY");
+            Assert.IsFalse(r.ok);
+            StringAssert.StartsWith("GATE_SHEET_GRID_MISMATCH", r.error);
+            Assert.IsFalse(Directory.Exists(Path.Combine(ProjectRoot(), "Assets/GDAI_Project/Generated/Animations")), "no writes on grid refusal");
+        }
+
+        // ── audit fix #4: manifest section with owned records but null pin is refused ──
+        [Test]
+        public void ManifestSectionInconsistent_Refused()
+        {
+            WriteBaselineV1Manifest();
+            Assert.IsTrue(RunRonin().ok);
+            // corrupt the manifest: keep owned records, null the materialization pin
+            string mAbs = Path.Combine(ProjectRoot(), "Assets/GDAI_Project/Generated/Manifests/GDAIPlayableAssets.json");
+            var m = JObject.Parse(File.ReadAllText(mAbs));
+            m["animation_assets"]["materialization"] = null;
+            File.WriteAllText(mAbs, m.ToString());
+            AssetDatabase.Refresh();
+            var r = RunRonin();
+            Assert.IsFalse(r.ok);
+            StringAssert.StartsWith("GUARD_MANIFEST_SECTION_INCONSISTENT", r.error);
+        }
+
+        // ── audit fix #5: approval hands out a read-only snapshot, not the mutable backing set ──
+        [Test]
+        public void Approval_ApprovedPaths_IsNotMutableBackingSet()
+        {
+            WriteBaselineV1Manifest();
+            var p = GdaiAnimationPackage.Parse(LoadPackageJson("TESTONLY-norm-ronin-4x6-v1.json"));
+            Assert.IsTrue(GdaiPreMutationGuard.Evaluate(p, "TEST_ONLY", GdaiPreMutationGuard.BuildFixedSetPlan(p), new List<string>(), out var approval, out _));
+            Assert.IsFalse(approval.ApprovedPaths is HashSet<string>, "must not expose a mutable HashSet");
+            var ex = Assert.Throws<GdaiAnimGateException>(() => approval.AssertInPlan("Assets/Scripts/Evil.anim"));
+            StringAssert.StartsWith("STOP_WRITE_NOT_IN_APPROVED_PLAN", ex.Code);
         }
 
         // ── the vertical slice: two differently-shaped packages through ONE importer ──

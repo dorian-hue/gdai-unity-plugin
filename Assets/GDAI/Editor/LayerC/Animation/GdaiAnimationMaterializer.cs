@@ -61,17 +61,30 @@ namespace GDAI.Bridge.Editor.LayerC.Animation
                 if (!string.Equals(srcSha, p.sheet_content_sha256, StringComparison.Ordinal))
                 { r.error = "HASH_SHEET_MISMATCH:" + srcSha; return r; }
 
-                // ── THE PRE-MUTATION GUARD (sole write precondition) ──
-                var plan = GdaiPreMutationGuard.BuildFixedSetPlan(p);
-                if (!GdaiPreMutationGuard.Evaluate(p, runClass, plan, new List<string>(), out var approval, out var refused))
-                { r.error = refused; return r; }
-                r.approval = approval;
+                // (audit fix #3) the DECLARED grid must tile the ACTUAL sheet — checked BEFORE slicing,
+                // in the shipping Run path (not just tests), from the PNG's own IHDR. A package whose
+                // sheet_content_sha256 matches a real PNG but whose columns/rows/cell_* don't tile it
+                // would otherwise slice rects off-texture.
+                if (!TryReadPngSize(sheetBytes, out int pngW, out int pngH))
+                { r.error = "FIXTURE_PNG_DECODE_FAILED:ihdr"; return r; }
+                if (p.columns * p.cell_width != pngW || p.rows * p.cell_height != pngH)
+                { r.error = "GATE_SHEET_GRID_MISMATCH:" + p.columns + "x" + p.rows + "@" + p.cell_width + "/" + p.cell_height + "!=" + pngW + "x" + pngH; return r; }
 
-                // prior owned sprite set (for the 0D-03 diff), captured BEFORE this run's writes
+                // (audit fix #1) compute the sprite-name removals set BEFORE any write and feed it to the
+                // guard's Stage-1A removal wall — so a same-profile SUBSET package is refused PRE-mutation
+                // (writes = 0), never detected post-reslice with the sheet already pruned + manifest stale.
                 var manifestBefore = GdaiPlayableOwnershipManifest.Load();
                 var prevNames = new HashSet<string>(
                     manifestBefore?.animation_assets?.sprites?.Select(s => s.sprite_name) ?? Enumerable.Empty<string>(),
                     StringComparer.Ordinal);
+                var nextNames0 = new HashSet<string>(p.cells.Select(c => c.sprite_name), StringComparer.Ordinal);
+                var plannedRemovals = prevNames.Where(n => !nextNames0.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+                // ── THE PRE-MUTATION GUARD (sole write precondition) ──
+                var plan = GdaiPreMutationGuard.BuildFixedSetPlan(p);
+                if (!GdaiPreMutationGuard.Evaluate(p, runClass, plan, plannedRemovals, out var approval, out var refused))
+                { r.error = refused; return r; }
+                r.approval = approval;
 
                 // ── sheet bytes + importer + slice (verbatim names; stable deterministic spriteIDs) ──
                 approval.AssertInPlan(p.SheetAssetPath);
@@ -333,6 +346,19 @@ namespace GDAI.Bridge.Editor.LayerC.Animation
 
         private static string ProjectRoot() => Directory.GetParent(Application.dataPath).FullName;
         private static string Abs(string assetPath) => Path.GetFullPath(Path.Combine(ProjectRoot(), assetPath));
+
+        /// <summary>Read width/height from a PNG's IHDR (dependency-free; no image decode).</summary>
+        private static bool TryReadPngSize(byte[] b, out int w, out int h)
+        {
+            w = h = 0;
+            if (b == null || b.Length < 24) return false;
+            // PNG signature + first chunk MUST be IHDR at offset 8 (len@8, "IHDR"@12, W@16, H@20).
+            if (b[0] != 0x89 || b[1] != 0x50 || b[2] != 0x4E || b[3] != 0x47) return false;
+            if (b[12] != (byte)'I' || b[13] != (byte)'H' || b[14] != (byte)'D' || b[15] != (byte)'R') return false;
+            w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
+            h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
+            return w > 0 && h > 0;
+        }
 
         private static void EnsureFolder(string assetFolder)
         {

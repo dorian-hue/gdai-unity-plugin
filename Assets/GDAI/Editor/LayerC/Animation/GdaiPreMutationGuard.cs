@@ -41,7 +41,9 @@ namespace GDAI.Bridge.Editor.LayerC.Animation
         public readonly string PriorManifestIdentitySha256; // sha256 of prior manifest file bytes, or "none"
         public readonly string PlannedWriteSetSha256;
         private readonly HashSet<string> _approvedPaths;
-        public IReadOnlyCollection<string> ApprovedPaths => _approvedPaths;
+        // (audit fix #5) hand out a defensive read-only snapshot — never the mutable backing set, so a
+        // same-assembly caller cannot downcast + Add() a path Evaluate never approved.
+        public IReadOnlyCollection<string> ApprovedPaths => Array.AsReadOnly(_approvedPaths.OrderBy(p => p, StringComparer.Ordinal).ToArray());
 
         internal GdaiGuardApproval(string pkgSha, string priorSha, string planSha, IEnumerable<string> paths)
         {
@@ -133,6 +135,12 @@ namespace GDAI.Bridge.Editor.LayerC.Animation
 
                 string priorSha = GdaiAnimJson.Sha256Hex(File.ReadAllBytes(manifestAbs));
                 var prior = manifest.animation_assets; // null ⇒ first materialization (v1 or animation-less v2)
+                // (audit fix #4) a section carrying owned records but NO identity pin is internally
+                // inconsistent (not producible by the materializer, only by hand-editing) — refuse it
+                // rather than let Phase 4 treat those paths as overwrite-permitted without a live-GUID check.
+                if (prior != null && prior.materialization == null &&
+                    ((prior.raw_sheets?.Count ?? 0) > 0 || (prior.clips?.Count ?? 0) > 0 || (prior.controllers?.Count ?? 0) > 0))
+                    throw new GdaiAnimGateException("GUARD_MANIFEST_SECTION_INCONSISTENT");
                 if (prior?.materialization != null)
                 {
                     var pin = prior.materialization;
