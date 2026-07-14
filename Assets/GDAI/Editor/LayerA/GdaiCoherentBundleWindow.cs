@@ -1154,6 +1154,24 @@ namespace GDAI.Bridge.Editor.LayerA
                         return;
                 }
 
+                // 10b (T4 0H): additive animation materialization consumer. When the imported bundle
+                // carries an animation package co-located under Assets/GDAI_Generated/Animation/, pair it
+                // with its imported sheet PNG and run the Stage-1A materializer into the composer-owned
+                // project (real Complete-Sync = PRODUCTION run: a TEST_ONLY package is rejected here).
+                // Absent → no-op (existing 8.9 behavior byte-for-byte); present-but-broken → fail closed.
+                // Covers the synchronous (already-compiled) compose path; the fresh-sync deferred/resume
+                // path (the DeferredToReload early-return above) still needs the same call on the resume
+                // seam (TryResumePendingCompose) — tracked 0H follow-up, not wired here.
+                if (composed == GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed)
+                {
+                    var anim = GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimationBundleConsumer.Consume(_sumSnapshot, "PRODUCTION");
+                    if (anim.outcome == GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimConsumeOutcome.Consumed)
+                        Debug.Log("[GDAI][CompleteSync] animation materialized: " + anim.packagePath + " · receipt " + anim.receiptStatus);
+                    else if (anim.outcome == GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimConsumeOutcome.Failed)
+                    { failPhase = "ANIMATION_CONSUME: " + anim.code; return; }
+                    // NotPresent → no animation in this bundle; existing behavior preserved.
+                }
+
                 // 11-12: save assets + open scene.
                 AssetDatabase.SaveAssets();
                 UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();

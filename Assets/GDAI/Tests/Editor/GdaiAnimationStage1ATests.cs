@@ -70,12 +70,17 @@ namespace GDAI.Bridge.Editor.Tests
         [SetUp]
         public void Clean()
         {
-            if (Directory.Exists(Path.Combine(ProjectRoot(), GenRoot)))
+            bool any = false;
+            foreach (var root in new[] { GenRoot, "Assets/GDAI_Generated/Animation" })
             {
-                FileUtil.DeleteFileOrDirectory(GenRoot);
-                FileUtil.DeleteFileOrDirectory(GenRoot + ".meta");
-                AssetDatabase.Refresh();
+                if (Directory.Exists(Path.Combine(ProjectRoot(), root)))
+                {
+                    FileUtil.DeleteFileOrDirectory(root);
+                    FileUtil.DeleteFileOrDirectory(root + ".meta");
+                    any = true;
+                }
             }
+            if (any) AssetDatabase.Refresh();
         }
 
         static GdaiAnimMaterializeResult RunRonin() =>
@@ -317,6 +322,71 @@ namespace GDAI.Bridge.Editor.Tests
             var plan = GdaiPreMutationGuard.BuildFixedSetPlan(p);
             Assert.IsFalse(GdaiPreMutationGuard.Evaluate(p, "TEST_ONLY", plan, new List<string> { "GDAI__ronin__idle__front__f000" }, out _, out var code));
             StringAssert.StartsWith("STOP_STAGE_1A_SCOPE_BREACH", code);
+        }
+
+        // ── 0H Phase 4/6: consumer discovers+pairs+materializes from the REAL imported-bundle layout ──
+        static void PlaceImportedBundle(string entityScope, string packageJson, string pngFixture)
+        {
+            // mirror ImportVerbatim + AssetPayloadImporter: package JSON + sheet PNG co-located under
+            // the whole-directory clean-replace bundle root Assets/GDAI_Generated/Animation/.
+            string dir = Path.Combine(ProjectRoot(), "Assets/GDAI_Generated/Animation");
+            if (Directory.Exists(dir)) { FileUtil.DeleteFileOrDirectory("Assets/GDAI_Generated/Animation"); AssetDatabase.Refresh(); }
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "GDAI__" + entityScope + ".materialization.v1.json"), packageJson);
+            File.Copy(FixtureAbs(pngFixture), Path.Combine(dir, "GDAI__" + entityScope + ".sheet.png"), true);
+            AssetDatabase.Refresh();
+        }
+
+        [Test]
+        public void Consumer_FromImportedBundleShape_Materializes_ReceiptPASS()
+        {
+            WriteBaselineV1Manifest();
+            PlaceImportedBundle("ronin", LoadPackageJson("TESTONLY-norm-ronin-4x6-v1.json"), RoninPng);
+            var r = GdaiAnimationBundleConsumer.Consume("TESTONLY-snap-0h", "TEST_ONLY");
+            Assert.AreEqual(GdaiAnimConsumeOutcome.Consumed, r.outcome, r.code);
+            Assert.AreEqual("PASS", r.receiptStatus);
+            Assert.AreEqual(24, AssetDatabase.LoadAllAssetRepresentationsAtPath(
+                "Assets/GDAI_Project/Generated/Animations/Sprites/GDAI__ronin.png").OfType<Sprite>().Count());
+        }
+
+        [Test]
+        public void Consumer_NoPackage_IsNotPresent_And_8_9_Untouched()
+        {
+            WriteBaselineV1Manifest();
+            var r = GdaiAnimationBundleConsumer.Consume("TESTONLY-snap-0h", "TEST_ONLY");
+            Assert.AreEqual(GdaiAnimConsumeOutcome.NotPresent, r.outcome);
+            Assert.IsFalse(Directory.Exists(Path.Combine(ProjectRoot(), "Assets/GDAI_Project/Generated/Animations")), "no materialization attempted");
+        }
+
+        [Test]
+        public void Consumer_MissingPNG_And_HashMismatch_And_Ambiguous_FailClosed()
+        {
+            WriteBaselineV1Manifest();
+            string dir = Path.Combine(ProjectRoot(), "Assets/GDAI_Generated/Animation");
+            Directory.CreateDirectory(dir);
+            // package present, PNG absent
+            File.WriteAllText(Path.Combine(dir, "GDAI__ronin.materialization.v1.json"), LoadPackageJson("TESTONLY-norm-ronin-4x6-v1.json"));
+            AssetDatabase.Refresh();
+            var r = GdaiAnimationBundleConsumer.Consume("s", "TEST_ONLY");
+            Assert.AreEqual(GdaiAnimConsumeOutcome.Failed, r.outcome);
+            StringAssert.StartsWith("CONSUME_SHEET_PAYLOAD_MISSING", r.code);
+
+            // wrong PNG bytes → hash mismatch
+            File.Copy(FixtureAbs(SkeletonPng), Path.Combine(dir, "GDAI__ronin.sheet.png"), true);
+            AssetDatabase.Refresh();
+            r = GdaiAnimationBundleConsumer.Consume("s", "TEST_ONLY");
+            Assert.AreEqual(GdaiAnimConsumeOutcome.Failed, r.outcome);
+            StringAssert.StartsWith("CONSUME_SHEET_HASH_MISMATCH", r.code);
+            Assert.IsFalse(Directory.Exists(Path.Combine(ProjectRoot(), "Assets/GDAI_Project/Generated/Animations")), "no write on pairing failure");
+
+            // two packages → ambiguous
+            File.Copy(FixtureAbs(RoninPng), Path.Combine(dir, "GDAI__ronin.sheet.png"), true);
+            File.WriteAllText(Path.Combine(dir, "GDAI__skeleton.materialization.v1.json"), LoadPackageJson("TESTONLY-norm-skeleton-4x5-v1.json"));
+            File.Copy(FixtureAbs(SkeletonPng), Path.Combine(dir, "GDAI__skeleton.sheet.png"), true);
+            AssetDatabase.Refresh();
+            r = GdaiAnimationBundleConsumer.Consume("s", "TEST_ONLY");
+            Assert.AreEqual(GdaiAnimConsumeOutcome.Failed, r.outcome);
+            StringAssert.StartsWith("CONSUME_AMBIGUOUS_PACKAGE", r.code);
         }
 
         // ── audit fix #1: a same-profile SUBSET package is refused PRE-write (no post-reslice prune) ──
