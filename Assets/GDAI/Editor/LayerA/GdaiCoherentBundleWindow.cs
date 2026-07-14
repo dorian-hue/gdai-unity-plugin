@@ -1164,7 +1164,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 // seam (TryResumePendingCompose) — tracked 0H follow-up, not wired here.
                 if (composed == GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed)
                 {
-                    var anim = GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimationBundleConsumer.Consume(_sumSnapshot, "PRODUCTION");
+                    var anim = GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimationBundleConsumer.Consume(_sumSnapshot, GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimationBundleConsumer.DefaultRunClass);
                     if (anim.outcome == GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimConsumeOutcome.Consumed)
                         Debug.Log("[GDAI][CompleteSync] animation materialized: " + anim.packagePath + " · receipt " + anim.receiptStatus);
                     else if (anim.outcome == GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimConsumeOutcome.Failed)

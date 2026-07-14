@@ -99,6 +99,16 @@ namespace GDAI.Bridge.Editor.LayerC
             ClearPendingCompose(root); // run once
             outcome = RunFromImportedContract(pc.project_id, pc.snapshot_id,
                 string.IsNullOrEmpty(pc.scene_path) ? "Assets/Scenes/Main.unity" : pc.scene_path, nowUtc, out result, out detail);
+            // T4 0H1 Phase 3: fresh-sync animation closure. The pending marker was cleared above (run once),
+            // so a re-entry cannot double-consume. When the DEFERRED compose succeeded (the fresh-sync path
+            // that produced the shipped candidate), run the animation consumer on the SAME snapshot identity
+            // so the animation materializes on the far side of the reload — one click, zero manual steps.
+            if (outcome == ImportedContractOutcome.Composed)
+            {
+                var anim = Animation.GdaiAnimationBundleConsumer.Consume(pc.snapshot_id, Animation.GdaiAnimationBundleConsumer.DefaultRunClass);
+                if (anim.outcome == Animation.GdaiAnimConsumeOutcome.Failed) detail += " · animation consume FAILED: " + anim.code;
+                else if (anim.outcome == Animation.GdaiAnimConsumeOutcome.Consumed) detail += " · animation materialized (" + anim.receiptStatus + ")";
+            }
             return true;
         }
 

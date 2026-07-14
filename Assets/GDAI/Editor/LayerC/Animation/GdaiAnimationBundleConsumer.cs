@@ -44,6 +44,12 @@ namespace GDAI.Bridge.Editor.LayerC.Animation
         public const string ImportRoot = "Assets/GDAI_Generated/Animation";
         public const string PackageSuffix = ".materialization.v1.json";
 
+        // Run-class policy for the product paths (Complete-Sync step 10b + the resume seam). A real sync is
+        // PRODUCTION (a TEST_ONLY package is rejected there — the producer never emits one into a Production
+        // snapshot). The editor TEST HARNESS sets this to "TEST_ONLY" to exercise the chain with sealed
+        // fixtures; Production code never assigns it, so it cannot leak TEST_ONLY into a real sync.
+        public static string DefaultRunClass = "PRODUCTION";
+
         private static string ProjectRoot() => Directory.GetParent(Application.dataPath).FullName;
         private static string Abs(string assetPath) => Path.GetFullPath(Path.Combine(ProjectRoot(), assetPath));
 
