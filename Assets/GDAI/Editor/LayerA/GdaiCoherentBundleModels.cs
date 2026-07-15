@@ -36,8 +36,10 @@ namespace GDAI.Bridge.Editor.LayerA
     {
         public string source;
         public string bundleType;
-        public bool compileReadySharedTypes;
-        public bool runtimeReadyDashSync;
+        // T4 0J C2: nullable so a raw context_snapshot that never declared these (older rows) deserializes
+        // instead of throwing null→bool. Consume with `== true` (null/false/absent = not ready).
+        public bool? compileReadySharedTypes;
+        public bool? runtimeReadyDashSync;
         public GdaiIntegrationController integrationController;
         public GdaiDashRuntimeSync dashRuntimeSync;
         public List<string> missing_modules = new List<string>();

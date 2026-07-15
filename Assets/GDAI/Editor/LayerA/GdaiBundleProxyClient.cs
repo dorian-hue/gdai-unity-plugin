@@ -134,8 +134,8 @@ namespace GDAI.Bridge.Editor.LayerA
                 {
                     source = "codegen-assembly", // proxy guarantees coherent codegen-assembly unity bundle
                     bundleType = dto.bundle_type,
-                    compileReadySharedTypes = dto.metadata != null && dto.metadata.compileReadySharedTypes,
-                    runtimeReadyDashSync = dto.metadata != null && dto.metadata.runtimeReadyDashSync,
+                    compileReadySharedTypes = dto.metadata?.compileReadySharedTypes == true, // C2: null/false/absent → false
+                    runtimeReadyDashSync = dto.metadata?.runtimeReadyDashSync == true,
                     integrationController = new GdaiIntegrationController
                     {
                         status = dto.metadata != null && dto.metadata.integrationController != null

@@ -140,7 +140,11 @@ namespace GDAI.Bridge.Editor.LayerB
                 return;
             }
 
-            bool go = EditorUtility.DisplayDialog("GDAI · Bind Default Enemy Prefab",
+            // Routed through the central confirmation policy (C5): interactive/production ALWAYS shows this
+            // exact dialog; a headless A4 run may auto-approve ONLY the ReplaceEnemyPrefab kind for the exact
+            // injected operation identity. Backup + Mutate still run unchanged after approval.
+            bool go = GdaiEditorConfirmationPolicy.Confirm(GdaiConfirmationKind.ReplaceEnemyPrefab,
+                "GDAI · Bind Default Enemy Prefab",
                 "Write the enemy sprite into the prefab asset? A backup is created first; Undo does not cover asset-file edits, so keep the backup.\n\n" +
                 $"role: {a.role} → {EnemyCanonicalRole}\n" +
                 $"entity: {Short(a.entityId)}\n" +

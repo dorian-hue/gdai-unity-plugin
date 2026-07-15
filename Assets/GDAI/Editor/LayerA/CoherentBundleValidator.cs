@@ -66,16 +66,16 @@ namespace GDAI.Bridge.Editor.LayerA
                     r.Fail($"context_snapshot.source must be 'codegen-assembly' (got '{ctx.source ?? "null"}').");
                 if (ctx.bundleType != "unity_core_bundle")
                     r.Fail($"context_snapshot.bundleType must be 'unity_core_bundle' (got '{ctx.bundleType ?? "null"}').");
-                if (!ctx.compileReadySharedTypes)
-                    r.Fail("context_snapshot.compileReadySharedTypes is false — bundle is not compile-ready.");
+                if (ctx.compileReadySharedTypes != true) // C2: null/false/absent all mean not-ready
+                    r.Fail("context_snapshot.compileReadySharedTypes is not true — bundle is not compile-ready.");
 
                 string icStatus = ctx.integrationController != null ? ctx.integrationController.status : null;
                 if (icStatus != "generated" && icStatus != "partial")
                     r.Fail($"integrationController.status must be 'generated' or 'partial' (got '{icStatus ?? "null"}').");
 
                 // Project-SLASH runtime-sync invariants are surfaced as warnings (not all bundles set them).
-                if (!ctx.runtimeReadyDashSync)
-                    r.Warn("runtimeReadyDashSync is false — dash runtime sync may not be wired for this bundle.");
+                if (ctx.runtimeReadyDashSync != true) // C2
+                    r.Warn("runtimeReadyDashSync is not true — dash runtime sync may not be wired for this bundle.");
                 string dashStatus = ctx.dashRuntimeSync != null ? ctx.dashRuntimeSync.status : null;
                 if (dashStatus != "patched")
                     r.Warn($"dashRuntimeSync.status is '{dashStatus ?? "null"}' (expected 'patched' for Project-SLASH).");
