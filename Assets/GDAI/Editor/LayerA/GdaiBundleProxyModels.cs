@@ -82,10 +82,14 @@ namespace GDAI.Bridge.Editor.LayerA
     [Serializable]
     public class GdaiBundleProxyMetadata
     {
-        public bool compileReadySharedTypes;
+        // T4 0J C2: these are OPTIONAL historical metadata. The proxy emits `?? null` for snapshots that
+        // never declared them (never fabricates false), so the DTO type MUST be nullable or Newtonsoft
+        // throws "Error converting {null} to System.Boolean" and the whole bundle is rejected. Consume with
+        // `== true` (null / false / absent all mean "not ready"). Same fix on every model that carries them.
+        public bool? compileReadySharedTypes;
         public GdaiBundleProxyIntegrationController integrationController;
         public object dashRuntimeSync;
-        public bool runtimeReadyDashSync;
+        public bool? runtimeReadyDashSync;
         public object unity6ApiCleanup;
         public List<string> sharedTypes = new List<string>();
     }

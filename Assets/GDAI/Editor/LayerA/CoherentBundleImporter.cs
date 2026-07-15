@@ -54,7 +54,7 @@ namespace GDAI.Bridge.Editor.LayerA
                             (ctx.integrationController.status == "generated" || ctx.integrationController.status == "partial");
                 if (ctx.source == "codegen-assembly" &&
                     ctx.bundleType == "unity_core_bundle" &&
-                    ctx.compileReadySharedTypes &&
+                    ctx.compileReadySharedTypes == true && // C2
                     icOk)
                 {
                     return snap;

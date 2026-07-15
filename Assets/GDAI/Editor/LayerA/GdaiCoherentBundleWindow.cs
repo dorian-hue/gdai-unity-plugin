@@ -46,7 +46,7 @@ namespace GDAI.Bridge.Editor.LayerA
 
         // MVP-C · device pairing + scoped token + selectors
         private const string DefaultFunctionsBase = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1";
-        private const string PluginVersion = "0.1.0-alpha.8.4";
+        private const string PluginVersion = "0.1.0-alpha.8.9";
         private const string PrefFunctionsBase = "GDAI_MvpC_FunctionsBase";
         private const string PrefPluginToken = "GDAI_MvpC_PluginToken";   // scoped gdai_plugin_v1.* token
         private const string PrefSelProject = "GDAI_MvpC_SelectedProjectId";
@@ -64,6 +64,15 @@ namespace GDAI.Bridge.Editor.LayerA
         private double _pollExpiresAt;
         private bool _connecting;
         private bool _cancelPoll;
+
+        // ---- AUTO-0N P1 · bound-project binding (fail closed) ----
+        private GdaiProjectBindingData _binding;          // valid binding or null
+        private int _lastBinaryAssetCount;                // AUTO-0N P2 receipt inputs
+        private int _lastPreservedMetaCount;
+        private bool _bindingFilePresent;
+        private string _bindingError = "";
+        private GdaiBindingState _bindingState = GdaiBindingState.Unpaired;
+        private bool IsBound => _binding != null;
 
         private List<GdaiCatalogProject> _projects = new List<GdaiCatalogProject>();
         private int _projIndex;
@@ -144,9 +153,70 @@ namespace GDAI.Bridge.Editor.LayerA
             _pluginToken = EditorPrefs.GetString(PrefPluginToken, "");   // scoped token persists (revocable)
             _selProjectId = EditorPrefs.GetString(PrefSelProject, "");
             _selSnapshot = EditorPrefs.GetString(PrefSelSnapshot, "");
+
+            // C4: TEST_ONLY session override (headless A4 only; re-injected by the harness after each domain
+            // reload). Reads the injected session instead of the user's real production prefs, so the harness
+            // never writes (and never pollutes) real EditorPrefs keys. Dormant for every real user/build.
+            if (GdaiEditorTestHooks.SessionActive)
+            {
+                var s = GdaiEditorTestHooks.Session;
+                if (!string.IsNullOrEmpty(s.functionsBase)) _functionsBase = s.functionsBase;
+                if (!string.IsNullOrEmpty(s.token)) _pluginToken = s.token; // non-secret harness token
+                if (!string.IsNullOrEmpty(s.projectId)) _selProjectId = s.projectId;
+            }
+
+            // AUTO-0N P1: read the exported-project binding (file read only —
+            // no network, no asset writes, no auto-apply on open).
+            LoadBindingFileOnly();
+        }
+
+        private void LoadBindingFileOnly()
+        {
+            _binding = null; _bindingError = "";
+            bool ok = GdaiProjectBinding.TryLoad(
+                GdaiProjectBinding.DefaultProjectRoot(), PluginVersion,
+                Application.unityVersion, out var data, out var err, out _bindingFilePresent);
+            if (ok) { _binding = data; }
+            else if (_bindingFilePresent) { _bindingError = err; }
+            RecomputeBindingState(catalogChecked: false, inCatalog: false);
+        }
+
+        // State ladder: UNPAIRED → PAIRED_BINDING_UNAVAILABLE/UNAUTHORIZED → PAIRED_BOUND_READY.
+        private void RecomputeBindingState(bool catalogChecked, bool inCatalog)
+        {
+            if (_bindingState == GdaiBindingState.Syncing) return; // sync owns transitions
+            if (!IsConnected) { _bindingState = GdaiBindingState.Unpaired; return; }
+            if (_bindingFilePresent && _binding == null)
+            { _bindingState = GdaiBindingState.PairedBindingUnavailable; return; }
+            if (!_bindingFilePresent) { _bindingState = GdaiBindingState.Unpaired; return; }
+            if (!catalogChecked) { _bindingState = GdaiBindingState.PairedBindingUnavailable; return; }
+            _bindingState = inCatalog
+                ? GdaiBindingState.PairedBoundReady
+                : GdaiBindingState.PairedBindingUnauthorized;
+        }
+
+        // Central bound-project assertion: every fetch/sync entry calls this
+        // BEFORE any network/import. Mismatch fails closed.
+        private bool AssertBoundProjectOrFail()
+        {
+            if (!IsBound) return true; // legacy unbound project keeps old behavior
+            if (string.IsNullOrEmpty(_selProjectId) || _selProjectId != _binding.project_id)
+            {
+                SetStatus(BundleStatus.FailedValidation,
+                    "Bound project mismatch: this exported project is bound to " +
+                    _binding.project_id + ". Import is blocked (fail closed).");
+                return false;
+            }
+            return true;
         }
 
         private bool IsConnected => !string.IsNullOrEmpty(_pluginToken);
+
+        // C6: the exact enable-gate the "Complete GDAI Export / Sync Project" button's DisabledScope uses
+        // (pure + testable). The button, when enabled, invokes CompleteExportSync() — the same operation the
+        // headless A4 harness reflection-invokes. A test pins: enabled iff PairedBoundReady and not busy.
+        internal static bool CompleteSyncButtonEnabled(GdaiBindingState state, bool busy)
+            => !busy && state == GdaiBindingState.PairedBoundReady;
         private static string TokenPrefix(string t) => string.IsNullOrEmpty(t) ? "(none)" : (t.Length > 16 ? t.Substring(0, 16) + "…" : t);
 
         private void SaveConnectionPrefs()
@@ -166,20 +236,25 @@ namespace GDAI.Bridge.Editor.LayerA
             _sumAssetCount = snap.assets != null ? snap.assets.Count : 0;
             _sumSource = ctx != null ? (ctx.source ?? "") : "";
             _sumBundleType = ctx != null ? (ctx.bundleType ?? "") : "";
-            _sumCompileReady = ctx != null && ctx.compileReadySharedTypes;
+            _sumCompileReady = ctx != null && ctx.compileReadySharedTypes == true; // C2
             _sumIcStatus = ctx != null && ctx.integrationController != null ? (ctx.integrationController.status ?? "") : "";
             _sumDashStatus = ctx != null && ctx.dashRuntimeSync != null ? (ctx.dashRuntimeSync.status ?? "") : "";
-            _sumRuntimeReady = ctx != null && ctx.runtimeReadyDashSync;
+            _sumRuntimeReady = ctx != null && ctx.runtimeReadyDashSync == true; // C2
 
-            EditorPrefs.SetString(PrefLastSnapshot, _sumSnapshot);
-            EditorPrefs.SetString(PrefLastProject, _sumProject);
-            EditorPrefs.SetInt(PrefLastAssetCount, _sumAssetCount);
-            EditorPrefs.SetString(PrefLastSource, _sumSource);
-            EditorPrefs.SetString(PrefLastBundleType, _sumBundleType);
-            EditorPrefs.SetBool(PrefLastCompileReady, _sumCompileReady);
-            EditorPrefs.SetString(PrefLastIcStatus, _sumIcStatus);
-            EditorPrefs.SetString(PrefLastDashStatus, _sumDashStatus);
-            EditorPrefs.SetBool(PrefLastRuntimeReady, _sumRuntimeReady);
+            // C4: in-memory summary set above (used by step 10b Consume); persist to prod EditorPrefs only in
+            // real use — a headless A4 session must not touch the user's production keys.
+            if (!GdaiEditorTestHooks.SessionActive)
+            {
+                EditorPrefs.SetString(PrefLastSnapshot, _sumSnapshot);
+                EditorPrefs.SetString(PrefLastProject, _sumProject);
+                EditorPrefs.SetInt(PrefLastAssetCount, _sumAssetCount);
+                EditorPrefs.SetString(PrefLastSource, _sumSource);
+                EditorPrefs.SetString(PrefLastBundleType, _sumBundleType);
+                EditorPrefs.SetBool(PrefLastCompileReady, _sumCompileReady);
+                EditorPrefs.SetString(PrefLastIcStatus, _sumIcStatus);
+                EditorPrefs.SetString(PrefLastDashStatus, _sumDashStatus);
+                EditorPrefs.SetBool(PrefLastRuntimeReady, _sumRuntimeReady);
+            }
         }
 
         private bool IsConfigured =>
@@ -267,6 +342,17 @@ namespace GDAI.Bridge.Editor.LayerA
                             ? "No authorized projects. Reconnect and authorize a project in your browser."
                             : "Connect first.");
                     }
+                    else if (IsBound)
+                    {
+                        // AUTO-0N P1: bound mode — identity is read-only, no free
+                        // project switching, never fall back to another project.
+                        EditorGUILayout.LabelField(
+                            string.IsNullOrEmpty(_binding.project_display_name)
+                                ? _binding.project_id
+                                : _binding.project_display_name + " (" + Short(_binding.project_id) + "…)",
+                            EditorStyles.boldLabel);
+                        EditorGUILayout.LabelField("Bound", _bindingState.ToString());
+                    }
                     else
                     {
                         var names = _projects.ConvertAll(p => string.IsNullOrEmpty(p.name) ? p.project_id : p.name).ToArray();
@@ -290,6 +376,16 @@ namespace GDAI.Bridge.Editor.LayerA
                 if (GUILayout.Button("Import Latest Bundle", GUILayout.Height(28)))
                     FetchProd(latest: true, import: true);
             }
+
+            // AUTO-0N P2: single user-triggered completion CTA. Enabled ONLY in
+            // PAIRED_BOUND_READY (bound exported project, catalog-authorized).
+            using (new EditorGUI.DisabledScope(!CompleteSyncButtonEnabled(_bindingState, _busy)))
+            {
+                if (GUILayout.Button("Complete GDAI Export / Sync Project", GUILayout.Height(32)))
+                    CompleteExportSync();
+            }
+            if (IsBound && _bindingState != GdaiBindingState.PairedBoundReady)
+                EditorGUILayout.HelpBox("Complete Sync requires state PAIRED_BOUND_READY (current: " + _bindingState + ").", MessageType.Info);
 
             if (HasLastSnapshot)
             {
@@ -648,7 +744,11 @@ namespace GDAI.Bridge.Editor.LayerA
             }
 
             string assetList = string.Join("\n", snap.assets.ConvertAll(a => "  " + a.path));
-            bool ok = EditorUtility.DisplayDialog(
+            // Routed through the central confirmation policy (C5): interactive/production ALWAYS shows this
+            // exact dialog; a headless A4 run may auto-approve ONLY the ReplaceGeneratedRoot kind, and only
+            // for the exact injected operation identity. ImportVerbatim still runs unchanged after approval.
+            bool ok = GdaiEditorConfirmationPolicy.Confirm(
+                GdaiConfirmationKind.ReplaceGeneratedRoot,
                 "GDAI · Import Coherent Bundle",
                 $"Replace Assets/GDAI_Generated with snapshot {snap.id}?\n\n" +
                 "The existing folder (if any) will be backed up outside Assets under .gdai/generated_backups, then replaced with:\n\n" +
@@ -660,9 +760,10 @@ namespace GDAI.Bridge.Editor.LayerA
             try
             {
                 var st = CoherentBundleImporter.ImportVerbatim(snap, out string msg, out List<string> written, out string backup, out int preservedMetas);
+                _lastPreservedMetaCount = preservedMetas; // AUTO-0N P2 receipt input
                 _status = st;
                 _lastBackupPath = backup ?? "";
-                EditorPrefs.SetString(PrefLastBackup, _lastBackupPath);
+                if (!GdaiEditorTestHooks.SessionActive) EditorPrefs.SetString(PrefLastBackup, _lastBackupPath);
                 if (st == BundleStatus.RefreshTriggered)
                 {
                     SaveSummary(snap);
@@ -747,6 +848,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 dto != null && dto.assets != null && dto.assets.Count > 0)
             {
                 var assetSummary = AssetPayloadImporter.ImportAll(dto.assets, dto.snapshot_id);
+                _lastBinaryAssetCount = assetSummary.Imported; // AUTO-0N P2 receipt input
                 _statusLine += $" Binary assets: {assetSummary.Imported} imported, {assetSummary.SkippedWithReason.Count} skipped.";
                 if (dto.assets_skipped != null && dto.assets_skipped.Count > 0)
                     Debug.Log($"[GDAI][LayerA][Assets] Backend skipped {dto.assets_skipped.Count} asset(s) before delivery (see proxy assets_skipped).");
@@ -816,7 +918,7 @@ namespace GDAI.Bridge.Editor.LayerA
                     if (poll.status == "approved" && !string.IsNullOrEmpty(poll.connection_token))
                     {
                         _pluginToken = poll.connection_token;
-                        EditorPrefs.SetString(PrefPluginToken, _pluginToken);
+                        if (!GdaiEditorTestHooks.SessionActive) EditorPrefs.SetString(PrefPluginToken, _pluginToken);
                         SetStatus(BundleStatus.Validated, "Connected to GDAI.");
                         await LoadProjectsInternal();
                         break;
@@ -861,7 +963,7 @@ namespace GDAI.Bridge.Editor.LayerA
             if (_projIndex < 0 || _projIndex >= _projects.Count) return;
             _selProjectId = _projects[_projIndex].project_id;
             _selProjectName = _projects[_projIndex].name;
-            EditorPrefs.SetString(PrefSelProject, _selProjectId);
+            if (!GdaiEditorTestHooks.SessionActive) EditorPrefs.SetString(PrefSelProject, _selProjectId);
             _bundles.Clear(); _bundleIndex = 0;
             RefreshBundles();
         }
@@ -875,20 +977,51 @@ namespace GDAI.Bridge.Editor.LayerA
             try
             {
                 _projects = await GdaiPluginCatalogClient.ListProjects(_functionsBase.Trim(), _pluginToken);
-                _projIndex = 0;
-                if (!string.IsNullOrEmpty(_selProjectId))
+                if (IsBound)
                 {
-                    int idx = _projects.FindIndex(p => p.project_id == _selProjectId);
-                    if (idx >= 0) _projIndex = idx;
+                    // AUTO-0N P1: bound mode — the binding project must be in the
+                    // approved catalog. Absent → PAIRED_BINDING_UNAUTHORIZED and
+                    // NO selection (never project[0], never overwrite binding,
+                    // never clear the token here).
+                    var ids = _projects.ConvertAll(p => p.project_id);
+                    bool inCatalog = GdaiProjectBinding.TryResolveCatalogIndex(
+                        _binding.project_id, ids, out int boundIdx);
+                    if (inCatalog)
+                    {
+                        _projIndex = boundIdx;
+                        _selProjectId = _projects[boundIdx].project_id;
+                        _selProjectName = _projects[boundIdx].name;
+                        if (!GdaiEditorTestHooks.SessionActive) EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                        RecomputeBindingState(catalogChecked: true, inCatalog: true);
+                        SetStatus(_status, $"Bound project authorized · {_projects.Count} project(s) in catalog.");
+                        await LoadBundlesInternal();
+                    }
+                    else
+                    {
+                        _selProjectId = ""; _selProjectName = "";
+                        RecomputeBindingState(catalogChecked: true, inCatalog: false);
+                        SetStatus(BundleStatus.FailedValidation,
+                            "Bound project is not authorized for this connection (fail closed). " +
+                            "Approve it in the browser pairing, then Refresh Projects.");
+                    }
                 }
-                if (_projects.Count > 0)
+                else
                 {
-                    _selProjectId = _projects[_projIndex].project_id;
-                    _selProjectName = _projects[_projIndex].name;
-                    EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                    _projIndex = 0;
+                    if (!string.IsNullOrEmpty(_selProjectId))
+                    {
+                        int idx = _projects.FindIndex(p => p.project_id == _selProjectId);
+                        if (idx >= 0) _projIndex = idx;
+                    }
+                    if (_projects.Count > 0)
+                    {
+                        _selProjectId = _projects[_projIndex].project_id;
+                        _selProjectName = _projects[_projIndex].name;
+                        if (!GdaiEditorTestHooks.SessionActive) EditorPrefs.SetString(PrefSelProject, _selProjectId);
+                    }
+                    SetStatus(_status, $"Loaded {_projects.Count} project(s).");
+                    if (_projects.Count > 0) await LoadBundlesInternal();
                 }
-                SetStatus(_status, $"Loaded {_projects.Count} project(s).");
-                if (_projects.Count > 0) await LoadBundlesInternal();
             }
             catch (GdaiBundleProxyException e) { SetStatus(BundleStatus.FailedValidation, e.Message); }
             catch (Exception e)
@@ -927,12 +1060,13 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             if (!IsConnected) { SetStatus(BundleStatus.FailedValidation, "Not connected. Connect to GDAI first."); return; }
             if (string.IsNullOrEmpty(_selProjectId)) { SetStatus(BundleStatus.FailedValidation, "Select a project first."); return; }
+            if (!AssertBoundProjectOrFail()) return; // AUTO-0N P1: fail closed before network/import
             string snapshotId = "";
             if (!latest)
             {
                 if (_bundleIndex < 0 || _bundleIndex >= _bundles.Count) { SetStatus(BundleStatus.FailedValidation, "Select a bundle first."); return; }
                 snapshotId = _bundles[_bundleIndex].snapshot_id;
-                _selSnapshot = snapshotId; EditorPrefs.SetString(PrefSelSnapshot, _selSnapshot);
+                _selSnapshot = snapshotId; if (!GdaiEditorTestHooks.SessionActive) EditorPrefs.SetString(PrefSelSnapshot, _selSnapshot);
             }
             string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
             await RunProxyFetch(proxyUrl, _selProjectId, latest, snapshotId, _pluginToken, import);
@@ -985,5 +1119,150 @@ namespace GDAI.Bridge.Editor.LayerA
             _statusLine = line;
             Repaint();
         }
+        // ---- AUTO-0N P2 · user-triggered Complete GDAI Export / Sync ----
+        // Reuses existing seams in order (§9.2). Never bypasses the existing
+        // Backup & Replace confirmation; never continues past a failed core
+        // step; writes a completion receipt ONLY on full success; measures
+        // outcomes (scene elements / colliders) instead of trusting step
+        // return values where legacy seams are void menu entries.
+        private async void CompleteExportSync()
+        {
+            if (_bindingState != GdaiBindingState.PairedBoundReady) return;
+            if (!AssertBoundProjectOrFail()) return;
+            var startedUtc = DateTime.UtcNow;
+            _bindingState = GdaiBindingState.Syncing;
+            string failPhase = null;
+            try
+            {
+                // 1-6: fetch + validate + confirm + code import + asset payloads
+                //      + role map + background (existing chained pipeline).
+                await RunCompleteFetchImport();
+                if (_status != BundleStatus.RefreshTriggered) { failPhase = "FETCH_IMPORT"; return; }
+
+                // 7-9: scene elements, spawn markers, arena bounds, demo
+                //      obstacle, edge blockers (existing Layer B seams).
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
+                var spawn = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
+                Debug.Log("[GDAI][CompleteSync] spawn markers: " + spawn);
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
+                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
+
+                // 10: playable composition. AUTO-0Q: when the imported bundle carries the rev4
+                //     playable contract, the zero-manual composer OWNS scene construction (canonical
+                //     objects, input asset, enemy prefab, bindings, camera, AudioListener, save,
+                //     ownership manifest, hard receipt — operation Completed only on PASS). It must
+                //     run INSTEAD of the legacy minimal scene prep, whose unmarked objects the
+                //     composer would rightly refuse. Pre-rev4 snapshots keep the legacy path.
+                var composed = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
+                    _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
+                    out var playableResult, out string playableDetail);
+                switch (composed)
+                {
+                    case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed:
+                        Debug.Log("[GDAI][CompleteSync] playable composer: " + playableDetail);
+                        break;
+                    case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.DeferredToReload:
+                        // Fresh sync: generated code is compiling; the resume hook composes + writes the
+                        // hard receipt automatically after the imminent domain reload. Still one click,
+                        // zero manual steps — just finishes on the other side of the reload.
+                        Debug.Log("[GDAI][CompleteSync] " + playableDetail);
+                        _bindingState = GdaiBindingState.SyncComplete;
+                        SetStatus(BundleStatus.RefreshTriggered,
+                            "Complete Sync: generated code imported · the playable scene composes automatically once Unity finishes compiling (no further clicks).");
+                        return;
+                    case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.NotPresent:
+                        Debug.Log("[GDAI][CompleteSync] " + playableDetail + " — legacy minimal scene prep");
+                        GDAI.Bridge.Editor.LayerC.GdaiMinimalPlayableSceneBuilder.PrepareMenu();
+                        break;
+                    default:
+                        failPhase = "PLAYABLE_COMPOSE: " + playableDetail;
+                        return;
+                }
+
+                // 10b (T4 0H): additive animation materialization consumer. When the imported bundle
+                // carries an animation package co-located under Assets/GDAI_Generated/Animation/, pair it
+                // with its imported sheet PNG and run the Stage-1A materializer into the composer-owned
+                // project (real Complete-Sync = PRODUCTION run: a TEST_ONLY package is rejected here).
+                // Absent → no-op (existing 8.9 behavior byte-for-byte); present-but-broken → fail closed.
+                // Covers the synchronous (already-compiled) compose path; the fresh-sync deferred/resume
+                // path (the DeferredToReload early-return above) still needs the same call on the resume
+                // seam (TryResumePendingCompose) — tracked 0H follow-up, not wired here.
+                if (composed == GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed)
+                {
+                    var anim = GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimationBundleConsumer.Consume(_sumSnapshot, GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimationBundleConsumer.DefaultRunClass);
+                    if (anim.outcome == GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimConsumeOutcome.Consumed)
+                        Debug.Log("[GDAI][CompleteSync] animation materialized: " + anim.packagePath + " · receipt " + anim.receiptStatus);
+                    else if (anim.outcome == GDAI.Bridge.Editor.LayerC.Animation.GdaiAnimConsumeOutcome.Failed)
+                    { failPhase = "ANIMATION_CONSUME: " + anim.code; return; }
+                    // NotPresent → no animation in this bundle; existing behavior preserved.
+                }
+
+                // 11-12: save assets + open scene.
+                AssetDatabase.SaveAssets();
+                UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
+
+                // Outcome measurement (fail closed on empty results).
+                int elementCount = 0, colliderCount = 0;
+                foreach (var col in UnityEngine.Object.FindObjectsByType<PolygonCollider2D>(FindObjectsSortMode.None)) { colliderCount++; _ = col; }
+                var sceneRoot = GameObject.Find("GDAI_SceneAssembly");
+                if (sceneRoot != null) elementCount = sceneRoot.transform.childCount;
+                string scenePath = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path;
+                if (string.IsNullOrEmpty(scenePath)) { failPhase = "SCENE_SAVE"; return; }
+
+                // 13: completion receipt (PASS only).
+                var receipt = new GdaiExportReceiptData
+                {
+                    project_id = _binding.project_id,
+                    snapshot_id = _sumSnapshot,
+                    snapshot_revision = _sumSource,
+                    plugin_version = PluginVersion,
+                    generated_file_count = _sumAssetCount,
+                    binary_asset_count = _lastBinaryAssetCount,
+                    preserved_meta_count = _lastPreservedMetaCount,
+                    backup_path = ToProjectRelative(_lastBackupPath),
+                    scene_path = scenePath,
+                    scene_elements_count = elementCount,
+                    collider_count = colliderCount,
+                    started_at = startedUtc.ToString("o"),
+                    completed_at = DateTime.UtcNow.ToString("o"),
+                    result = "PASS",
+                };
+                string receiptPath = GdaiExportReceipt.Write(GdaiProjectBinding.DefaultProjectRoot(), receipt, DateTime.UtcNow);
+                _bindingState = GdaiBindingState.SyncComplete;
+                SetStatus(BundleStatus.RefreshTriggered,
+                    $"Complete Sync PASS · {elementCount} scene element(s) · {colliderCount} collider(s) · receipt {Path.GetFileName(receiptPath)}");
+            }
+            catch (Exception e)
+            {
+                failPhase = failPhase ?? ("EXCEPTION: " + e.Message);
+            }
+            finally
+            {
+                if (_bindingState != GdaiBindingState.SyncComplete)
+                {
+                    _bindingState = GdaiBindingState.SyncFailed;
+                    SetStatus(BundleStatus.FailedValidation,
+                        "Complete Sync FAILED at phase " + (failPhase ?? "UNKNOWN") +
+                        ". No receipt written. Recovery: fix the reported phase, then click Complete Sync again (imports are backup-protected).");
+                }
+                Repaint();
+            }
+        }
+
+        private async Task RunCompleteFetchImport()
+        {
+            string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
+            await RunProxyFetch(proxyUrl, _selProjectId, latest: true, snapshotId: "", token: _pluginToken, import: true);
+        }
+
+        private static string ToProjectRelative(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            string root = GdaiProjectBinding.DefaultProjectRoot().Replace('\\', '/');
+            string p = path.Replace('\\', '/');
+            return p.StartsWith(root) ? p.Substring(root.Length).TrimStart('/') : p;
+        }
+
     }
 }

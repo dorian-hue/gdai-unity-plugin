@@ -116,6 +116,45 @@ def main():
         check(pkg.get("version") == m.group(1), "version.packageEqualsTelemetry",
               f"package={pkg.get('version')} telemetry={m.group(1)}")
 
+    # 7b. AUTO-0N required export/binding files (8.5 release contract)
+    for req in ("Assets/GDAI/Editor/LayerA/GdaiProjectBinding.cs",
+                "Assets/GDAI/Editor/LayerA/GdaiExportReceipt.cs",
+                "Assets/GDAI/Tests/Editor/GDAI.Editor.Tests.asmdef",
+                "Assets/GDAI/Tests/Editor/GdaiProjectBindingTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiBoundStateTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiExportReceiptTests.cs"):
+        check(req in tracked, f"required.{req.rsplit('/',1)[1]}")
+
+    # 7c. AUTO-0Q required zero-manual-composer files (8.6 release contract).
+    # PREVENTS_REGRESSION: shipping 8.6 with a missing composer/receipt/CTA source
+    # or its test (the 8.3->8.4 incident class: files present locally, absent from
+    # the distributable git face -> fresh installs break).
+    for req in ("Assets/GDAI/Editor/LayerA/GdaiPlayableContract.cs",
+                "Assets/GDAI/Editor/LayerA/GdaiPlayableOperation.cs",
+                "Assets/GDAI/Editor/LayerA/GdaiPlayableResume.cs",
+                "Assets/GDAI/Editor/LayerB/GdaiInputAssetBuilder.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiAudioListenerEnsurer.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiCameraConfigurer.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiCanonicalScene.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiEnemyPrefabBuilder.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiPlayableBindingApplier.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiPlayableComposerCta.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiPlayableOwnershipManifest.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiPlayableReceipt.cs",
+                "Assets/GDAI/Editor/LayerC/GdaiSceneObjectComposer.cs",
+                "Assets/GDAI/Runtime/GdaiGeneratedPlayableMarker.cs",
+                "Assets/GDAI/Tests/Editor/GdaiPlayableContractTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiPlayableOperationTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiPlayableResumeTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiInputAssetBuilderTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiCameraConfigurerTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiSceneComposerTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiEnemyPrefabBuilderTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiPlayableBindingApplierTests.cs",
+                "Assets/GDAI/Tests/Editor/GdaiPlayableCtaReceiptTests.cs",
+                "Assets/GDAI/Tests/Editor/Fixtures/PlayableContract.rev4.projectslash-2d874a40.json"):
+        check(req in tracked, f"required.{req.rsplit('/',1)[1]}")
+
     # 7. layer completeness
     for name, prefix in (("LayerA", "Assets/GDAI/Editor/LayerA/"),
                          ("LayerB", "Assets/GDAI/Editor/LayerB/"),

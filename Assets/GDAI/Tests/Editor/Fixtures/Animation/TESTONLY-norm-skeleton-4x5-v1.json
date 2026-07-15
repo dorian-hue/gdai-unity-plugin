@@ -1,0 +1,299 @@
+{
+  "schema": "gdai.animation.materialization_package.v1",
+  "package_class": "TEST_ONLY",
+  "package_id": "TESTONLY-norm-skeleton-4x5-v1",
+  "package_content_sha256": "caff803254f431c6f545484c457746c5d0f8404df34574673ec36f06c88b555d",
+  "profile_id": "JASON_SKELETON_4X5_EXPERIMENT_V1",
+  "profile_version": 1,
+  "entity_id": "skeleton",
+  "adoption": {
+    "adoption_event_id": "adopt-TESTONLY-002",
+    "adopted": true,
+    "revoked": false,
+    "adopted_at": "2026-07-14T00:00:00Z",
+    "source_generation_event_id": "gen-TESTONLY-002"
+  },
+  "qa": {
+    "qa_event_id": "qa-TESTONLY-002",
+    "status": "PASSED",
+    "gate_version": "semantic-qa-gate.v1"
+  },
+  "provider_provenance": {
+    "provider_id": "gdai_testonly_offline_fixture",
+    "request_digest": null,
+    "capability_status": "UNKNOWN",
+    "license_status": "UNKNOWN"
+  },
+  "sheet": {
+    "role": "RAW_SPRITE_SHEET",
+    "content_sha256": "4d7833a7d26aef98e329c261b96ad47b51b531844bd35e9638e65d45c9ebdf77",
+    "cell_width": 48,
+    "cell_height": 48,
+    "columns": 4,
+    "rows": 5,
+    "alpha": "STRAIGHT"
+  },
+  "import_policy": {
+    "pixels_per_unit": 48,
+    "pivot": {
+      "alignment": "BottomCenter",
+      "x": 0.5,
+      "y": 0
+    },
+    "filter_mode": "Point",
+    "nominal_fps": 8
+  },
+  "clips": [
+    {
+      "clip_id": "idle",
+      "action": "idle",
+      "direction": null,
+      "frame_count": 5,
+      "nominal_fps": 8,
+      "loop": true,
+      "pivot": null,
+      "events": []
+    },
+    {
+      "clip_id": "walk",
+      "action": "walk",
+      "direction": null,
+      "frame_count": 5,
+      "nominal_fps": 8,
+      "loop": true,
+      "pivot": null,
+      "events": []
+    },
+    {
+      "clip_id": "attack",
+      "action": "attack",
+      "direction": null,
+      "frame_count": 5,
+      "nominal_fps": 8,
+      "loop": false,
+      "pivot": null,
+      "events": [
+        {
+          "kind": "HIT",
+          "frame_index": 2,
+          "semantic": "OPEN",
+          "cancel_on_interrupt": true,
+          "payload_ref": null
+        },
+        {
+          "kind": "HIT",
+          "frame_index": 3,
+          "semantic": "CLOSE",
+          "cancel_on_interrupt": true,
+          "payload_ref": null
+        }
+      ]
+    },
+    {
+      "clip_id": "death",
+      "action": "death",
+      "direction": null,
+      "frame_count": 5,
+      "nominal_fps": 8,
+      "loop": false,
+      "pivot": null,
+      "events": []
+    }
+  ],
+  "cells": [
+    {
+      "cell_id": "idle.f000",
+      "sprite_name": "GDAI__skeleton__idle__f000",
+      "clip_id": "idle",
+      "frame_index": 0,
+      "direction": null,
+      "row": 4,
+      "column": 0
+    },
+    {
+      "cell_id": "idle.f001",
+      "sprite_name": "GDAI__skeleton__idle__f001",
+      "clip_id": "idle",
+      "frame_index": 1,
+      "direction": null,
+      "row": 3,
+      "column": 0
+    },
+    {
+      "cell_id": "idle.f002",
+      "sprite_name": "GDAI__skeleton__idle__f002",
+      "clip_id": "idle",
+      "frame_index": 2,
+      "direction": null,
+      "row": 2,
+      "column": 0
+    },
+    {
+      "cell_id": "idle.f003",
+      "sprite_name": "GDAI__skeleton__idle__f003",
+      "clip_id": "idle",
+      "frame_index": 3,
+      "direction": null,
+      "row": 1,
+      "column": 0
+    },
+    {
+      "cell_id": "idle.f004",
+      "sprite_name": "GDAI__skeleton__idle__f004",
+      "clip_id": "idle",
+      "frame_index": 4,
+      "direction": null,
+      "row": 0,
+      "column": 0
+    },
+    {
+      "cell_id": "walk.f000",
+      "sprite_name": "GDAI__skeleton__walk__f000",
+      "clip_id": "walk",
+      "frame_index": 0,
+      "direction": null,
+      "row": 4,
+      "column": 1
+    },
+    {
+      "cell_id": "walk.f001",
+      "sprite_name": "GDAI__skeleton__walk__f001",
+      "clip_id": "walk",
+      "frame_index": 1,
+      "direction": null,
+      "row": 3,
+      "column": 1
+    },
+    {
+      "cell_id": "walk.f002",
+      "sprite_name": "GDAI__skeleton__walk__f002",
+      "clip_id": "walk",
+      "frame_index": 2,
+      "direction": null,
+      "row": 2,
+      "column": 1
+    },
+    {
+      "cell_id": "walk.f003",
+      "sprite_name": "GDAI__skeleton__walk__f003",
+      "clip_id": "walk",
+      "frame_index": 3,
+      "direction": null,
+      "row": 1,
+      "column": 1
+    },
+    {
+      "cell_id": "walk.f004",
+      "sprite_name": "GDAI__skeleton__walk__f004",
+      "clip_id": "walk",
+      "frame_index": 4,
+      "direction": null,
+      "row": 0,
+      "column": 1
+    },
+    {
+      "cell_id": "attack.f000",
+      "sprite_name": "GDAI__skeleton__attack__f000",
+      "clip_id": "attack",
+      "frame_index": 0,
+      "direction": null,
+      "row": 4,
+      "column": 2
+    },
+    {
+      "cell_id": "attack.f001",
+      "sprite_name": "GDAI__skeleton__attack__f001",
+      "clip_id": "attack",
+      "frame_index": 1,
+      "direction": null,
+      "row": 3,
+      "column": 2
+    },
+    {
+      "cell_id": "attack.f002",
+      "sprite_name": "GDAI__skeleton__attack__f002",
+      "clip_id": "attack",
+      "frame_index": 2,
+      "direction": null,
+      "row": 2,
+      "column": 2
+    },
+    {
+      "cell_id": "attack.f003",
+      "sprite_name": "GDAI__skeleton__attack__f003",
+      "clip_id": "attack",
+      "frame_index": 3,
+      "direction": null,
+      "row": 1,
+      "column": 2
+    },
+    {
+      "cell_id": "attack.f004",
+      "sprite_name": "GDAI__skeleton__attack__f004",
+      "clip_id": "attack",
+      "frame_index": 4,
+      "direction": null,
+      "row": 0,
+      "column": 2
+    },
+    {
+      "cell_id": "death.f000",
+      "sprite_name": "GDAI__skeleton__death__f000",
+      "clip_id": "death",
+      "frame_index": 0,
+      "direction": null,
+      "row": 4,
+      "column": 3
+    },
+    {
+      "cell_id": "death.f001",
+      "sprite_name": "GDAI__skeleton__death__f001",
+      "clip_id": "death",
+      "frame_index": 1,
+      "direction": null,
+      "row": 3,
+      "column": 3
+    },
+    {
+      "cell_id": "death.f002",
+      "sprite_name": "GDAI__skeleton__death__f002",
+      "clip_id": "death",
+      "frame_index": 2,
+      "direction": null,
+      "row": 2,
+      "column": 3
+    },
+    {
+      "cell_id": "death.f003",
+      "sprite_name": "GDAI__skeleton__death__f003",
+      "clip_id": "death",
+      "frame_index": 3,
+      "direction": null,
+      "row": 1,
+      "column": 3
+    },
+    {
+      "cell_id": "death.f004",
+      "sprite_name": "GDAI__skeleton__death__f004",
+      "clip_id": "death",
+      "frame_index": 4,
+      "direction": null,
+      "row": 0,
+      "column": 3
+    }
+  ],
+  "normalization": {
+    "source_schema": "batch_layout.demo.v1",
+    "source_package_id": "TESTONLY-skeleton-4x5-src",
+    "source_axis_origin": "BOTTOM_LEFT",
+    "adapter_version": "t4-adapter.v1",
+    "axis_convention": "CANONICAL_ROW_MAJOR"
+  },
+  "materialization_target": {
+    "root": "Assets/GDAI_Project/Generated/Animations",
+    "sprites_dir": "Sprites",
+    "clips_dir": "Clips",
+    "controllers_dir": "Controllers",
+    "ownership_label": "GDAI_Owned_Animation"
+  }
+}

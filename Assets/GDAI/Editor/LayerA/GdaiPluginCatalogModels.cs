@@ -36,8 +36,10 @@ namespace GDAI.Bridge.Editor.LayerA
         public string bundle_type;
         public string target_engine;
         public int files_count;
-        public bool compileReadySharedTypes;
+        // T4 0J C2: unity-plugin-bundles emits these as `?? null` (historical-undeclared), so the wire model
+        // must be nullable or Newtonsoft throws null→bool. Consume with `== true`.
+        public bool? compileReadySharedTypes;
         public string integrationControllerStatus;
-        public bool runtimeReadyDashSync;
+        public bool? runtimeReadyDashSync;
     }
 }
