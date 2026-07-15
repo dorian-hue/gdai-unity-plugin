@@ -167,6 +167,13 @@ namespace GDAI.Bridge.Editor.LayerC
                 if (!compose.Ok) return Fail(res, op, root, nowUtc, "compose: " + compose.Summary);
                 op.Advance(root, GdaiPlayablePhase.SceneObjectsComposed, nowUtc);
 
+                // 2b · Gate B: consume GDAI_SceneAssembly.json INSIDE this canonical scene (single authority).
+                //      Arena boundary colliders + scene element colliders + spawn markers now live in the
+                //      scene the composer owns and saves, instead of being placed pre-reset and wiped.
+                var sceneAsm = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyComposerCore.Compose();
+                res.Log.Add("scene assembly: " + sceneAsm.summary);
+                if (!sceneAsm.ok) return Fail(res, op, root, nowUtc, "scene assembly: " + sceneAsm.summary);
+
                 // 3 · deterministic input asset. The InputActionReference sub-assets are read later by
                 // path-scoped LoadAllAssetsAtPath (which forces a synchronous load) — so a single import
                 // here is enough and we avoid the double-import that duplicates the reference sub-assets.
@@ -252,6 +259,8 @@ namespace GDAI.Bridge.Editor.LayerC
             Undo.RecordObject(sr, "GDAI assign player sprite");
             sr.sprite = sprite;
             sr.color = Color.white;
+            // Gate B AC-2: re-derive the Player collider from the now-assigned sprite bounds (deterministic).
+            GdaiSceneObjectComposer.EnsurePlayerPhysics(player, sprite);
             res.Log.Add("player sprite assigned: " + sprite.name);
         }
     }

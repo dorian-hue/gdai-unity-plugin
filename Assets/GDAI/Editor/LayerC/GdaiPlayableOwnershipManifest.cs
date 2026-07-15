@@ -23,6 +23,10 @@ using UnityEngine;
 namespace GDAI.Bridge.Editor.LayerC
 {
     [Serializable] public class GdaiOwnedObjectRecord { public string name; public string role; public string profile_id; public string snapshot_id; }
+    // Gate B: a scene-assembly-owned object carries GdaiSceneAssemblyMarker (kind/entity_id/assembly_version) —
+    // a different marker + identity than the playable objects' GdaiGeneratedPlayableMarker, so it needs its own
+    // typed record (the playable owned_scene_objects Verify cannot mechanically verify it). Same single manifest.
+    [Serializable] public class GdaiOwnedSceneObjectRecord { public string name; public string kind; public string entity_id; public int assembly_version; }
     [Serializable] public class GdaiOwnedAssetRecord { public string kind; public string path; public string guid; }
 
     [Serializable]
@@ -45,6 +49,11 @@ namespace GDAI.Bridge.Editor.LayerC
         // above remain the primary handles; this is the enumerable projection consumers iterate.
         public List<GdaiOwnedAssetRecord> assets = new List<GdaiOwnedAssetRecord>();
         public List<GdaiOwnedObjectRecord> owned_scene_objects = new List<GdaiOwnedObjectRecord>();
+
+        // Gate B: scene-assembly-owned objects (arena boundaries, scene elements, spawns, root). Typed additive
+        // field in the SAME single manifest (no second store); omitted when the bundle carries no scene assembly.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public List<GdaiOwnedSceneObjectRecord> owned_scene_assembly;
 
         // T4 Stage-1A additive (0E-03 Manifest v2): OPTIONAL animation ownership section. Absent/null
         // in every v1 manifest AND in playable-only v2 manifests ("this profile owns no animation
@@ -112,6 +121,16 @@ namespace GDAI.Bridge.Editor.LayerC
                         snapshot_id = marker.snapshotId,
                     });
                 m.owned_scene_objects = m.owned_scene_objects.OrderBy(o => o.name, StringComparer.Ordinal).ToList();
+
+                // Gate B: record scene-assembly-owned objects (GdaiSceneAssemblyMarker) — re-derived fresh from
+                // the live scene each write (composer-owned, like owned_scene_objects). Ordered deterministically;
+                // null when there is no scene assembly (kept out of the serialized JSON via NullValueHandling).
+                var sceneOwned = new List<GdaiOwnedSceneObjectRecord>();
+                foreach (var sm in UnityEngine.Object.FindObjectsByType<GdaiSceneAssemblyMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    sceneOwned.Add(new GdaiOwnedSceneObjectRecord { name = sm.gameObject.name, kind = sm.kind ?? "", entity_id = sm.entityId ?? "", assembly_version = sm.assemblyVersion });
+                m.owned_scene_assembly = sceneOwned.Count > 0
+                    ? sceneOwned.OrderBy(o => o.name, StringComparer.Ordinal).ToList()
+                    : null;
 
                 // ── T4 0J · additive-merge preservation of the v2 animation_assets section ─────────────────
                 // The composer owns ONLY the v1/playable fields built above. The additive v2 `animation_assets`
@@ -236,6 +255,20 @@ namespace GDAI.Bridge.Editor.LayerC
                 bool recordedHas = recorded.Any(o => o.name == mk.gameObject.name && o.role == mk.ownedRole
                     && o.profile_id == mk.profileId && o.snapshot_id == mk.snapshotId);
                 if (!recordedHas) { error = "live owned object not recorded in manifest: " + mk.gameObject.name; return false; }
+            }
+
+            // Gate B: scene-assembly ownership must agree bidirectionally with live GdaiSceneAssemblyMarker.
+            var recordedScene = m.owned_scene_assembly ?? new List<GdaiOwnedSceneObjectRecord>();
+            var liveScene = UnityEngine.Object.FindObjectsByType<GdaiSceneAssemblyMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (var o in recordedScene)
+            {
+                bool ok = liveScene.Any(sm => sm.gameObject.name == o.name && (sm.kind ?? "") == (o.kind ?? "") && (sm.entityId ?? "") == (o.entity_id ?? ""));
+                if (!ok) { error = "manifest scene object has no matching live marker: " + o.name + " (" + o.kind + ")"; return false; }
+            }
+            foreach (var sm in liveScene)
+            {
+                bool recordedHas = recordedScene.Any(o => o.name == sm.gameObject.name && (o.kind ?? "") == (sm.kind ?? "") && (o.entity_id ?? "") == (sm.entityId ?? ""));
+                if (!recordedHas) { error = "live scene object not recorded in manifest: " + sm.gameObject.name; return false; }
             }
             return true;
         }

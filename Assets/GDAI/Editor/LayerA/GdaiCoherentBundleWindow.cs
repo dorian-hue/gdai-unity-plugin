@@ -1139,14 +1139,12 @@ namespace GDAI.Bridge.Editor.LayerA
                 await RunCompleteFetchImport();
                 if (_status != BundleStatus.RefreshTriggered) { failPhase = "FETCH_IMPORT"; return; }
 
-                // 7-9: scene elements, spawn markers, arena bounds, demo
-                //      obstacle, edge blockers (existing Layer B seams).
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
-                var spawn = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
-                Debug.Log("[GDAI][CompleteSync] spawn markers: " + spawn);
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
+                // 7-9: (Gate B) scene assembly is NO LONGER placed here. It used to run BEFORE the composer
+                //      reset the canonical scene in Single mode, so the reset wiped it. The canonical playable
+                //      composer is now the SOLE Production scene-mutation authority — it consumes
+                //      GDAI_SceneAssembly.json (via GdaiSceneAssemblyComposerCore) inside its own owned scene,
+                //      after the Single-mode reset and before the ownership manifest / receipt / save. The
+                //      manual Layer-B menus still exist for debugging and call the same underlying cores.
 
                 // 10: playable composition. AUTO-0Q: when the imported bundle carries the rev4
                 //     playable contract, the zero-manual composer OWNS scene construction (canonical
