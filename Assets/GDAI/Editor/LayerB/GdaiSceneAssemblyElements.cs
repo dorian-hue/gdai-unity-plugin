@@ -65,7 +65,8 @@ namespace GDAI.Bridge.Editor.LayerB
                             "(add scene elements in the web Design Studio, then re-import the bundle).");
 
             var root = GdaiSceneAssemblySpawnMarkers.EnsureRoot(dto);
-            int created = 0, updated = 0, withSprite = 0, missingSprite = 0, blockers = 0;
+            int created = 0, updated = 0, withSprite = 0, missingSprite = 0, blockers = 0, unresolved = 0;
+            var unresolvedIds = new List<string>();
             var keepNames = new HashSet<string>();
 
             foreach (var e in dto.scene_elements)
@@ -117,35 +118,63 @@ namespace GDAI.Bridge.Editor.LayerB
 
                 // Draft blocker collider (priority chain; consumes GDAI physics metadata when present,
                 // else sprite-fit fallback). Only for demo_draft_blocker physics that is NOT confirmed.
-                if (ApplyDraftCollider(go, e, sprite)) blockers++;
+                switch (ApplyDraftCollider(go, e, sprite))
+                {
+                    case ColliderResolution.Box:
+                    case ColliderResolution.Polygon: blockers++; break;
+                    case ColliderResolution.Unresolved:
+                        unresolved++;
+                        unresolvedIds.Add(e.id);
+                        break;
+                }
             }
 
             int pruned = GdaiSceneAssemblySpawnMarkers.PruneStaleChildren(root, keepNames, GdaiSceneAssemblyKind.SceneElement);
 
             EditorSceneManager.MarkSceneDirty(root.scene);
+            // B5 · fail-closed: an element that EXPLICITLY requests a polygon collider but cannot build one
+            // (no ≥3-pt sprite physics shape, canvas-point→local mapping still pending GDAI 1G) is UNRESOLVED.
+            // We never substitute a box for it — instead PlaceSceneElements fails so the whole compose fails
+            // closed (no partial scene reported as PASS). Real bundles today carry no polygon intent, so this
+            // never trips them; it only guards against a silent shape downgrade.
+            bool ok = unresolved == 0;
             string msg = "Scene elements: " + created + " created, " + updated + " updated, " + pruned + " stale removed.\n" +
-                         "With sprite: " + withSprite + " · missing sprite: " + missingSprite + " · draft blockers: " + blockers + ".\n" +
+                         "With sprite: " + withSprite + " · missing sprite: " + missingSprite + " · draft blockers: " + blockers +
+                         " · unresolved(polygon): " + unresolved + ".\n" +
+                         (unresolved > 0
+                             ? "UNRESOLVED (fail-closed) elements requesting an unbuildable polygon collider: " +
+                               string.Join(", ", unresolvedIds) + " — no box substituted.\n"
+                             : "") +
                          "physics.confirmed never modified · no ProjectSettings/layers touched · scene marked dirty (not saved).";
             Debug.Log("[GDAI][Scene][SceneElements] " + msg);
-            return new GdaiSceneAssemblySpawnMarkers.ApplyResult { ok = true, dialog = msg };
+            return new GdaiSceneAssemblySpawnMarkers.ApplyResult { ok = ok, dialog = msg };
         }
 
+        /// <summary>Outcome of resolving a scene-element draft collider. Internal so the Editor test
+        /// assembly (InternalsVisibleTo GDAI.Editor.Tests) can drive the real resolution over synthetic
+        /// sprites — the box→sprite_polygon transition and the polygon fail-closed path.</summary>
+        internal enum ColliderResolution { NotWanted, Box, Polygon, Unresolved }
+
         /// <summary>
-        /// Draft blocker collider — priority: (A) metadata polygon [DEFERRED: point→local mapping is
-        /// pending GDAI 1G spec + a real bundle, so it is recognized but NOT faked] → (B) metadata box
-        /// (auto_alpha_bounds) → (C) sprite physics shape (PolygonCollider2D, tight fit) → (D) sprite
-        /// bounds box (center offset) → (E) 0.8×0.8. Only for demo_draft_blocker physics that is NOT
-        /// confirmed; never writes physics.confirmed. Idempotent: removes the stale collider of the
-        /// other type when switching. Returns true if a collider is present after the call.
+        /// Draft blocker collider. Two disjoint lanes:
+        ///  • EXPLICIT polygon intent (trusted collider_mode/shape == "polygon"): the shape MUST be a real
+        ///    polygon or the element is UNRESOLVED — B5 fail-closed, NEVER a silent box downgrade. The only
+        ///    buildable polygon source today is the sprite physics shape; canvas-point→local mapping is still
+        ///    pending GDAI 1G, so metadata points cannot be faked into a box.
+        ///  • BOX/unspecified intent: (B) metadata box (auto_alpha_bounds) → (C) sprite physics shape
+        ///    (PolygonCollider2D, a tight-fit UPGRADE — this is the box→sprite_polygon transition) → (D)
+        ///    sprite bounds box → (E) 0.8×0.8.
+        /// Only for demo_draft_blocker physics that is NOT confirmed; never writes physics.confirmed.
+        /// Idempotent: removes the stale collider of the other type when switching.
         /// </summary>
-        private static bool ApplyDraftCollider(GameObject go, SceneElementDto e, Sprite sprite)
+        internal static ColliderResolution ApplyDraftCollider(GameObject go, SceneElementDto e, Sprite sprite)
         {
             bool wantBlocker = e.physics != null && e.physics.kind == DraftBlockerKind && !e.physics.confirmed;
             if (!wantBlocker)
             {
                 RemoveAll<BoxCollider2D>(go);
                 RemoveAll<PolygonCollider2D>(go);
-                return false;
+                return ColliderResolution.NotWanted;
             }
 
             var p = e.physics;
@@ -153,12 +182,29 @@ namespace GDAI.Bridge.Editor.LayerB
             // ★1F1 · only trust metadata carrying NEW GDAI 1G collision fields. Legacy source-less w/h
             //        (e.g. 80×80 → 0.8) is a hint, NOT SSOT → never build a metadata box from it.
             bool trustedMeta = !string.IsNullOrEmpty(p.collider_mode) || !string.IsNullOrEmpty(p.source) || p.version > 0;
+            bool wantsPolygon = trustedMeta && (p.collider_mode == "polygon" || p.shape == "polygon");
 
-            // A · trusted metadata polygon — recognized but NOT faked (point→local mapping pending 1G spec).
-            if (trustedMeta && (p.collider_mode == "polygon" || p.shape == "polygon") && p.points != null && p.points.Count >= 3)
-                Debug.Log("[GDAI][Scene][SceneElements] element '" + e.id + "' carries polygon collider metadata (" +
-                          p.points.Count + " pts); point→local mapping pending GDAI 1G spec — using sprite-fit fallback for now.");
+            // ── EXPLICIT polygon intent · build-or-unresolved (fail-closed) ──
+            if (wantsPolygon)
+            {
+                if (sprite != null && TryBuildSpriteShapePolygon(go, sprite))
+                {
+                    Debug.Log("[GDAI][Scene][SceneElements] collider mode: sprite_polygon (explicit) · element '" + e.id + "'.");
+                    return ColliderResolution.Polygon;
+                }
+                // cannot honour the requested polygon → leave NO collider (no box substitute) and fail closed.
+                RemoveAll<BoxCollider2D>(go);
+                RemoveAll<PolygonCollider2D>(go);
+                Debug.LogError("[GDAI][Scene][SceneElements] collider mode: UNRESOLVED · element '" + e.id +
+                               "' requests a polygon collider but the sprite has no buildable physics shape (>=3 pts)" +
+                               (p.points != null && p.points.Count >= 3
+                                   ? " and canvas-point→local mapping is pending GDAI 1G (" + p.points.Count + " metadata pts)"
+                                   : "") +
+                               ". No box substituted (fail-closed).");
+                return ColliderResolution.Unresolved;
+            }
 
+            // ── BOX / unspecified intent ──
             // B · trusted metadata box (new GDAI 1G collision metadata, e.g. auto_alpha_bounds).
             if (trustedMeta && p.w > 0f && p.h > 0f)
             {
@@ -170,14 +216,14 @@ namespace GDAI.Bridge.Editor.LayerB
                 box.offset = new Vector2(p.offset_x / GdaiSceneAssemblyCoordinateUtility.PpuWorld,
                                          -p.offset_y / GdaiSceneAssemblyCoordinateUtility.PpuWorld);
                 Debug.Log("[GDAI][Scene][SceneElements] collider mode: metadata_box · element '" + e.id + "'.");
-                return true;
+                return ColliderResolution.Box;
             }
 
-            // C · sprite physics shape → PolygonCollider2D (tight fit; removes ALL stale boxes).
+            // C · sprite physics shape → PolygonCollider2D (tight fit UPGRADE; removes ALL stale boxes).
             if (sprite != null && TryBuildSpriteShapePolygon(go, sprite))
             {
                 Debug.Log("[GDAI][Scene][SceneElements] collider mode: sprite_polygon · element '" + e.id + "'.");
-                return true;
+                return ColliderResolution.Polygon;
             }
 
             // D · sprite bounds box (covers the visible image; center offset handles non-center pivot).
@@ -194,7 +240,7 @@ namespace GDAI.Bridge.Editor.LayerB
                     box.size = new Vector2(b.x, b.y);
                     box.offset = new Vector2(c.x, c.y);
                     Debug.Log("[GDAI][Scene][SceneElements] collider mode: sprite_bounds_box · element '" + e.id + "'.");
-                    return true;
+                    return ColliderResolution.Box;
                 }
             }
 
@@ -206,7 +252,7 @@ namespace GDAI.Bridge.Editor.LayerB
             fb.offset = Vector2.zero;
             fb.size = new Vector2(FallbackColliderWorldSize, FallbackColliderWorldSize);
             Debug.LogWarning("[GDAI][Scene][SceneElements] collider mode: fallback_0_8 · no trusted metadata/no sprite for element '" + e.id + "'.");
-            return true;
+            return ColliderResolution.Box;
         }
 
         /// <summary>

@@ -131,6 +131,13 @@ namespace GDAI.Bridge.Editor.LayerC
 
             if (r.Errors.Count > 0) return r;
 
+            // Gate B · AC-2: the generated Player needs a concrete Collider2D. The contract requires a concrete
+            // collider only for the enemy, so without this the Player is a dynamic Rigidbody2D with nothing to
+            // collide against the arena boundaries / scene elements. Add exactly one BoxCollider2D + top-down
+            // Rigidbody2D settings. CharacterStateMachine stays the sole dash authority (untouched).
+            var playerGo = FindOwned(contract.player.object_name);
+            if (playerGo != null) EnsurePlayerPhysics(playerGo, playerGo.GetComponent<SpriteRenderer>()?.sprite);
+
             // verify each declared object now exists with its declared components
             foreach (var spec in contract.scene_objects)
             {
@@ -145,6 +152,38 @@ namespace GDAI.Bridge.Editor.LayerC
             }
             r.Ok = r.Errors.Count == 0;
             return r;
+        }
+
+        // Gate B · deterministic minimum Player physics contract. One non-trigger BoxCollider2D (the shape the
+        // Plugin already uses for arena blockers and box scene elements — no new physics schema); size derived
+        // from the sprite bounds when a sprite is present, else a fixed contract fallback (never machine/import
+        // dependent). Rigidbody2D forced to a top-down dynamic body: no gravity, frozen rotation, continuous
+        // detection (so a dash cannot tunnel through a boundary). Idempotent: re-running keeps exactly one collider.
+        public const float PlayerFallbackColliderSize = 0.8f;
+        public const float PlayerColliderShrink = 0.9f;
+
+        public static void EnsurePlayerPhysics(GameObject player, Sprite sprite)
+        {
+            if (player == null) return;
+            // exactly one authoritative collider — drop any stray polygon collider so there is a single shape.
+            foreach (var poly in player.GetComponents<PolygonCollider2D>()) Undo.DestroyObjectImmediate(poly);
+            var box = player.GetComponent<BoxCollider2D>();
+            if (box == null) box = Undo.AddComponent<BoxCollider2D>(player);
+            box.isTrigger = false;
+            box.offset = Vector2.zero;
+            if (sprite != null)
+            {
+                var s = sprite.bounds.size;
+                box.size = new Vector2(Mathf.Max(0.05f, s.x * PlayerColliderShrink), Mathf.Max(0.05f, s.y * PlayerColliderShrink));
+            }
+            else box.size = new Vector2(PlayerFallbackColliderSize, PlayerFallbackColliderSize);
+
+            var rb = player.GetComponent<Rigidbody2D>();
+            if (rb == null) rb = Undo.AddComponent<Rigidbody2D>(player);
+            rb.bodyType = RigidbodyType2D.Dynamic;
+            rb.gravityScale = 0f;
+            rb.constraints = RigidbodyConstraints2D.FreezeRotation;
+            rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
         }
 
         private static string RoleOf(GdaiPlayableContract c, string objName)

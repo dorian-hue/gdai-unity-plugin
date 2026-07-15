@@ -23,6 +23,15 @@ using UnityEngine;
 namespace GDAI.Bridge.Editor.LayerC
 {
     [Serializable] public class GdaiOwnedObjectRecord { public string name; public string role; public string profile_id; public string snapshot_id; }
+    // Gate B: a scene-assembly-owned object carries GdaiSceneAssemblyMarker (kind/entity_id/assembly_version) —
+    // a different marker + identity than the playable objects' GdaiGeneratedPlayableMarker, so it needs its own
+    // typed record (the playable owned_scene_objects Verify cannot mechanically verify it). Same single manifest.
+    // Gate B · Req1: source_id is the UNIQUE STABLE SEMANTIC identity (kind + "|" + entity_id) — derived from
+    // the sceneAssembly SSOT ids (blocker entity_id="arena_left"…, scene_element=e.id, spawn=entity_id; root/
+    // bounds carry no entity so kind alone is unique). Identity NEVER depends on the Unity object NAME, so a
+    // future name-derivation change cannot break re-find/dedup, and two objects sharing a source_id are a real
+    // duplicate the receipt flags. name/kind/entity_id/assembly_version stay for readability + migration.
+    [Serializable] public class GdaiOwnedSceneObjectRecord { public string source_id; public string name; public string kind; public string entity_id; public int assembly_version; }
     [Serializable] public class GdaiOwnedAssetRecord { public string kind; public string path; public string guid; }
 
     [Serializable]
@@ -45,6 +54,11 @@ namespace GDAI.Bridge.Editor.LayerC
         // above remain the primary handles; this is the enumerable projection consumers iterate.
         public List<GdaiOwnedAssetRecord> assets = new List<GdaiOwnedAssetRecord>();
         public List<GdaiOwnedObjectRecord> owned_scene_objects = new List<GdaiOwnedObjectRecord>();
+
+        // Gate B: scene-assembly-owned objects (arena boundaries, scene elements, spawns, root). Typed additive
+        // field in the SAME single manifest (no second store); omitted when the bundle carries no scene assembly.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public List<GdaiOwnedSceneObjectRecord> owned_scene_assembly;
 
         // T4 Stage-1A additive (0E-03 Manifest v2): OPTIONAL animation ownership section. Absent/null
         // in every v1 manifest AND in playable-only v2 manifests ("this profile owns no animation
@@ -112,6 +126,24 @@ namespace GDAI.Bridge.Editor.LayerC
                         snapshot_id = marker.snapshotId,
                     });
                 m.owned_scene_objects = m.owned_scene_objects.OrderBy(o => o.name, StringComparer.Ordinal).ToList();
+
+                // Gate B: record scene-assembly-owned objects (GdaiSceneAssemblyMarker) — re-derived fresh from
+                // the live scene each write (composer-owned, like owned_scene_objects). Ordered deterministically;
+                // null when there is no scene assembly (kept out of the serialized JSON via NullValueHandling).
+                var sceneOwned = new List<GdaiOwnedSceneObjectRecord>();
+                foreach (var sm in UnityEngine.Object.FindObjectsByType<GdaiSceneAssemblyMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    sceneOwned.Add(new GdaiOwnedSceneObjectRecord
+                    {
+                        source_id = SceneObjectSourceId(sm.kind, sm.entityId),
+                        name = sm.gameObject.name,
+                        kind = sm.kind ?? "",
+                        entity_id = sm.entityId ?? "",
+                        assembly_version = sm.assemblyVersion,
+                    });
+                // deterministic order by the stable identity, not the Unity name.
+                m.owned_scene_assembly = sceneOwned.Count > 0
+                    ? sceneOwned.OrderBy(o => o.source_id, StringComparer.Ordinal).ToList()
+                    : null;
 
                 // ── T4 0J · additive-merge preservation of the v2 animation_assets section ─────────────────
                 // The composer owns ONLY the v1/playable fields built above. The additive v2 `animation_assets`
@@ -237,8 +269,32 @@ namespace GDAI.Bridge.Editor.LayerC
                     && o.profile_id == mk.profileId && o.snapshot_id == mk.snapshotId);
                 if (!recordedHas) { error = "live owned object not recorded in manifest: " + mk.gameObject.name; return false; }
             }
+
+            // Gate B: scene-assembly ownership must agree bidirectionally with live GdaiSceneAssemblyMarker,
+            // matched on the STABLE SEMANTIC identity (source_id = kind|entity_id), not the Unity object name.
+            var recordedScene = m.owned_scene_assembly ?? new List<GdaiOwnedSceneObjectRecord>();
+            var liveScene = UnityEngine.Object.FindObjectsByType<GdaiSceneAssemblyMarker>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            foreach (var o in recordedScene)
+            {
+                string oid = string.IsNullOrEmpty(o.source_id) ? SceneObjectSourceId(o.kind, o.entity_id) : o.source_id;
+                bool ok = liveScene.Any(sm => SceneObjectSourceId(sm.kind, sm.entityId) == oid);
+                if (!ok) { error = "manifest scene object has no matching live marker: " + oid + " (" + o.name + ")"; return false; }
+            }
+            foreach (var sm in liveScene)
+            {
+                string sid = SceneObjectSourceId(sm.kind, sm.entityId);
+                bool recordedHas = recordedScene.Any(o =>
+                    (string.IsNullOrEmpty(o.source_id) ? SceneObjectSourceId(o.kind, o.entity_id) : o.source_id) == sid);
+                if (!recordedHas) { error = "live scene object not recorded in manifest: " + sid + " (" + sm.gameObject.name + ")"; return false; }
+            }
             return true;
         }
+
+        /// <summary>Gate B · Req1: the unique stable semantic identity of a scene-assembly object. Derived from
+        /// the sceneAssembly SSOT (kind + entity_id), never the Unity object name. Objects without an entity
+        /// (root, arena bounds) are unique by kind alone.</summary>
+        public static string SceneObjectSourceId(string kind, string entityId) =>
+            (kind ?? "") + "|" + (entityId ?? "");
 
         private static void EnsureFolder(string assetFolder)
         {
