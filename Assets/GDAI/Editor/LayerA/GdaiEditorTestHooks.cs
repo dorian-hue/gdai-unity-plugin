@@ -40,6 +40,13 @@ namespace GDAI.Bridge.Editor.LayerA
         internal static bool SessionActive => Session != null && Application.isBatchMode;
 
         internal static void ClearSession() { Session = null; }
+
+        /// <summary>Harness entry (reflection-invoked with primitive args, so the internal type stays here).
+        /// The token is a non-secret harness value; it is never persisted to EditorPrefs or logged.</summary>
+        internal static void InjectSession(string functionsBase, string projectId, string token, string operationId)
+        {
+            Session = new GdaiTestSession { functionsBase = functionsBase, projectId = projectId, token = token, operationId = operationId };
+        }
     }
 
     /// <summary>The exact, enumerated set of confirmations a headless A4 run may auto-approve. Allowlist.</summary>
@@ -61,6 +68,15 @@ namespace GDAI.Bridge.Editor.LayerA
         internal static Func<GdaiConfirmationKind, bool> TestOverride;
 
         internal static void Clear() { TestOverride = null; }
+
+        /// <summary>Harness entry (reflection-invoked with primitive args): install a scoped approver that
+        /// approves ONLY for the exact operation identity AND only the named enumerated kinds. Delegate +
+        /// enum parsing stay inside this assembly. Anything else (wrong op, unknown/other kind) → denied.</summary>
+        internal static void InstallScopedBatchApprover(string operationId, string[] allowedKindNames)
+        {
+            var allowed = new System.Collections.Generic.HashSet<string>(allowedKindNames ?? new string[0]);
+            TestOverride = kind => GdaiEditorTestHooks.Session?.operationId == operationId && allowed.Contains(kind.ToString());
+        }
 
         /// <summary>
         /// Pure decision seam (testable without showing a dialog): returns the test decision, or null when
