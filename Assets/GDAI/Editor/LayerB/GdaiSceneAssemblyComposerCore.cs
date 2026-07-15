@@ -32,27 +32,23 @@ namespace GDAI.Bridge.Editor.LayerB
                 return new Result { ok = true, summary = "no GDAI_SceneAssembly.json — scene assembly skipped" };
 
             var msgs = new List<string>();
-            bool ok = true;
 
-            // arena boundary physical colliders (BoxCollider2D per default_blockers[]) — AC-1
+            // ── content-bearing cores are MANDATORY: any real failure fails-closed the whole compose (requirement
+            //    #2 — no partial scene as PASS). arena boundary colliders (AC-1), scene element colliders (AC-3),
+            //    spawn markers. The real obstacles come from scene_elements[]; the legacy "demo obstacle" fallback
+            //    is intentionally NOT part of the canonical scene assembly (it fails when there is no spare
+            //    non-spawn placement, and would otherwise mask a healthy scene). ──
             var blockers = GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockers();
-            ok &= blockers.ok; msgs.Add("blockers=" + blockers.ok);
-
-            // explicit scene elements (SpriteRenderer + exactly one authoritative collider) — AC-3
+            msgs.Add("blockers=" + blockers.ok);
             var elements = GdaiSceneAssemblyElements.PlaceSceneElements();
-            ok &= elements.ok; msgs.Add("elements=" + elements.ok);
-
-            // spawn markers (identity only; no colliders)
+            msgs.Add("elements=" + elements.ok);
             var spawns = GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
-            ok &= spawns.ok; msgs.Add("spawns=" + spawns.ok);
+            msgs.Add("spawns=" + spawns.ok);
+            bool ok = blockers.ok && elements.ok && spawns.ok;
 
-            // arena bounds debug gizmo (no collider)
+            // arena bounds is a debug-only gizmo (no collider); best-effort, never gates the compose.
             var bounds = GdaiSceneAssemblyArenaBounds.ShowArenaBounds();
-            ok &= bounds.ok; msgs.Add("bounds=" + bounds.ok);
-
-            // demo obstacle (one non-spawn placement → BoxCollider2D)
-            var demo = GdaiSceneAssemblyDemoObstacle.CreateDemoObstacle();
-            ok &= demo.ok; msgs.Add("demo=" + demo.ok);
+            msgs.Add("bounds=" + bounds.ok);
 
             return new Result { ok = ok, summary = string.Join(" · ", msgs) };
         }
