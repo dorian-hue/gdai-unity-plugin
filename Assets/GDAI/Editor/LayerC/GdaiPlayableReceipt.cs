@@ -27,6 +27,31 @@ namespace GDAI.Bridge.Editor.LayerC
 {
     [Serializable] public class GdaiReceiptCheck { public string key; public string expected; public string actual; public bool pass; }
 
+    // Gate B · B7 · typed scene-assembly metrics, extended INTO the same receipt (not a separate file). Every
+    // field is filled by INDEPENDENT readback of the reopened saved scene (+ the sceneAssembly SSOT for the
+    // unresolved check) — never a builder return value. Present only when a scene assembly was composed.
+    [Serializable]
+    public class GdaiSceneMetrics
+    {
+        public string scene_layout_id;
+        public string scene_guid;
+        public bool saved;
+        public bool in_build_settings;
+        public int root_count;               // GdaiSceneAssemblyMarker kind=root (must be exactly 1)
+        public int arena_boundaries;         // kind=blocker
+        public int spawn_markers;            // kind=player_spawn + enemy_spawn
+        public int scene_elements;           // kind=scene_element
+        public int box_colliders;            // across owned scene objects + Player
+        public int polygon_colliders;
+        public int circle_colliders;
+        public int player_colliders;         // Collider2D on the owned Player (AC-2 ⇒ >= 1)
+        public int stale_colliders;          // owned objects carrying >1 Collider2D (duplicate/leftover shape)
+        public int duplicate_identities;     // owned scene objects sharing a source_id (kind|entity_id)
+        public int unresolved;               // DTO draft-blocker scene_elements with NO live Collider2D
+        public int red_errors;               // LogType.Error/Exception observed during the sync (injected)
+        public bool manual_assembly;         // any manual assembly step was required
+    }
+
     [Serializable]
     public class GdaiPlayableReceipt
     {
@@ -44,6 +69,10 @@ namespace GDAI.Bridge.Editor.LayerC
         public string framing_inputs;         // §6 coverage: fit_arena inputs, verified via camera_ortho_size
         public List<GdaiReceiptCheck> checks = new List<GdaiReceiptCheck>();
         public List<string> failures = new List<string>();
+
+        // Gate B · B7: additive scene section. Null (omitted) for playable-only bundles with no scene assembly.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public GdaiSceneMetrics scene;
 
         public bool IsPass => status == "PASS";
     }
@@ -78,7 +107,7 @@ namespace GDAI.Bridge.Editor.LayerC
         /// (no Date.Now hidden dependency). Does not write; call Write() to persist atomically.
         /// </summary>
         public static GdaiPlayableReceipt Build(GdaiPlayableContract c, string projectId, string snapshotId,
-            string contractSha256, string scenePath, DateTime nowUtc)
+            string contractSha256, string scenePath, DateTime nowUtc, int redErrorCount = 0)
         {
             var r = new GdaiPlayableReceipt
             {
@@ -155,6 +184,23 @@ namespace GDAI.Bridge.Editor.LayerC
 
             // 11 · manual assembly steps
             Check("manual_assembly_steps", "0", r.manual_assembly_steps.ToString());
+
+            // 12 · Gate B scene-assembly metrics + PASS gates (independent readback of the reopened scene +
+            //      the sceneAssembly SSOT for the unresolved check). Only applied when a scene assembly was
+            //      composed (root marker present) — playable-only bundles leave r.scene null and skip these.
+            var sm = ComputeSceneMetrics(scenePath, redErrorCount);
+            if (sm.root_count > 0 || sm.arena_boundaries > 0 || sm.scene_elements > 0 || sm.spawn_markers > 0)
+            {
+                r.scene = sm;
+                Check("scene_root", "1", sm.root_count.ToString());
+                Check("scene_player_colliders_ge1", "true", (sm.player_colliders >= 1).ToString().ToLowerInvariant());
+                Check("scene_duplicate_identities", "0", sm.duplicate_identities.ToString());
+                Check("scene_stale_colliders", "0", sm.stale_colliders.ToString());
+                Check("scene_unresolved", "0", sm.unresolved.ToString());
+                Check("scene_red_errors", "0", sm.red_errors.ToString());
+                // (manual assembly is gated once by manual_assembly_steps above; sm.manual_assembly is the
+                //  informational mirror — the composer is the sole authority, so it is definitionally false.)
+            }
 
             int failed = r.checks.Count(x => !x.pass);
             r.status = failed == 0 ? "PASS" : (failed < r.checks.Count ? "PARTIAL" : "FAIL");
@@ -277,6 +323,73 @@ namespace GDAI.Bridge.Editor.LayerC
         private static string ColorStr(GdaiPlayableContract.Rgba c) =>
             c == null ? "null" : $"{c.r:0.##},{c.g:0.##},{c.b:0.##},{c.a:0.##}";
         private static string ColorStr(Color c) => $"{c.r:0.##},{c.g:0.##},{c.b:0.##},{c.a:0.##}";
+
+        // ---- Gate B · B7 · scene-assembly metrics (independent readback of the reopened scene + SSOT) ----
+        private static GdaiSceneMetrics ComputeSceneMetrics(string scenePath, int redErrorCount)
+        {
+            var m = new GdaiSceneMetrics { red_errors = redErrorCount, manual_assembly = false };
+            m.scene_guid = AssetDatabase.AssetPathToGUID(scenePath) ?? "";
+            m.saved = File.Exists(Path.Combine(ProjectRoot(), scenePath));
+            m.in_build_settings = EditorBuildSettings.scenes.Any(s => s.path == scenePath && s.enabled);
+
+            // sceneAssembly SSOT — scene_layout_id + the draft-blocker elements that MUST carry a collider.
+            var draftBlockerIds = new HashSet<string>();
+            if (GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyModels.TryLoad(out var dto, out _) && dto != null)
+            {
+                m.scene_layout_id = dto.scene_layout_id;
+                foreach (var e in dto.scene_elements ?? new List<GDAI.Bridge.Editor.LayerB.SceneElementDto>())
+                    if (e != null && !string.IsNullOrEmpty(e.id) && e.physics != null
+                        && e.physics.kind == "demo_draft_blocker" && !e.physics.confirmed)
+                        draftBlockerIds.Add(e.id);
+            }
+
+            var markers = UnityEngine.Object.FindObjectsByType<GDAI.Bridge.GdaiSceneAssemblyMarker>(
+                FindObjectsInactive.Include, FindObjectsSortMode.None);
+
+            var idCounts = new Dictionary<string, int>();
+            var owned = new List<GameObject>();
+            foreach (var mk in markers)
+            {
+                string sid = GdaiPlayableOwnershipManifest.SceneObjectSourceId(mk.kind, mk.entityId);
+                idCounts[sid] = idCounts.TryGetValue(sid, out var n) ? n + 1 : 1;
+                owned.Add(mk.gameObject);
+                switch (mk.kind)
+                {
+                    case GDAI.Bridge.GdaiSceneAssemblyKind.Root: m.root_count++; break;
+                    case GDAI.Bridge.GdaiSceneAssemblyKind.Blocker: m.arena_boundaries++; break;
+                    case GDAI.Bridge.GdaiSceneAssemblyKind.PlayerSpawn:
+                    case GDAI.Bridge.GdaiSceneAssemblyKind.EnemySpawn: m.spawn_markers++; break;
+                    case GDAI.Bridge.GdaiSceneAssemblyKind.SceneElement: m.scene_elements++; break;
+                }
+            }
+            m.duplicate_identities = idCounts.Values.Count(v => v > 1);
+
+            // include the playable-owned Player so its collider (AC-2) counts + is checked.
+            var player = GdaiSceneObjectComposer.FindOwned("Player");
+            if (player != null) { owned.Add(player); m.player_colliders = player.GetComponents<Collider2D>().Length; }
+
+            foreach (var go in owned)
+            {
+                var cols = go.GetComponents<Collider2D>();
+                if (cols.Length > 1) m.stale_colliders++;   // duplicate/leftover shape on one object
+                foreach (var col in cols)
+                {
+                    if (col is BoxCollider2D) m.box_colliders++;
+                    else if (col is PolygonCollider2D) m.polygon_colliders++;
+                    else if (col is CircleCollider2D) m.circle_colliders++;
+                }
+            }
+
+            // unresolved: each DTO draft-blocker element must have a live Collider2D on its owned object.
+            foreach (var id in draftBlockerIds)
+            {
+                var go = markers.FirstOrDefault(mk =>
+                    mk.kind == GDAI.Bridge.GdaiSceneAssemblyKind.SceneElement && (mk.entityId ?? "") == id)?.gameObject;
+                if (go == null || go.GetComponent<Collider2D>() == null) m.unresolved++;
+            }
+
+            return m;
+        }
 
         // ---- atomic write ----
 

@@ -155,6 +155,14 @@ namespace GDAI.Bridge.Editor.LayerC
                 c.schema_version, c.contract_revision, contractSha256, scenePath, nowUtc);
             res.OperationId = op.operation_id;
 
+            // Gate B · B7: count red console errors (Error/Exception) raised WHILE composing, so the receipt can
+            // fail-closed on a scene that composed "successfully" per return values but logged a real error. The
+            // count is snapshotted before the receipt's own readback (below) so the receipt does not count itself.
+            int redErrors = 0;
+            Application.LogCallback redErrorCounter = (cond, st, type) =>
+            { if (type == LogType.Error || type == LogType.Exception) redErrors++; };
+            Application.logMessageReceived += redErrorCounter;
+
             try
             {
                 // 1 · canonical scene + Build Settings
@@ -217,8 +225,9 @@ namespace GDAI.Bridge.Editor.LayerC
                 if (!GdaiPlayableOwnershipManifest.Write(c, projectId, snapshotId, contractSha256, scenePath, out string merr))
                     return Fail(res, op, root, nowUtc, "ownership manifest: " + merr);
 
-                // 10 · HARD RECEIPT — independent readback (reopens the saved scene)
-                var receipt = GdaiPlayableReceiptWriter.Build(c, projectId, snapshotId, contractSha256, scenePath, nowUtc);
+                // 10 · HARD RECEIPT — independent readback (reopens the saved scene). Pass the red-error count
+                //      captured during composition (snapshotted here, before the receipt's own readback).
+                var receipt = GdaiPlayableReceiptWriter.Build(c, projectId, snapshotId, contractSha256, scenePath, nowUtc, redErrors);
                 if (!GdaiPlayableReceiptWriter.Write(receipt, out string rerr))
                     return Fail(res, op, root, nowUtc, "receipt write: " + rerr);
                 res.Receipt = receipt;
@@ -236,6 +245,7 @@ namespace GDAI.Bridge.Editor.LayerC
                 return res;
             }
             catch (Exception e) { return Fail(res, op, root, nowUtc, "cta exception: " + e.Message); }
+            finally { Application.logMessageReceived -= redErrorCounter; }
         }
 
         private static Result Fail(Result res, GdaiPlayableOperation op, string root, DateTime nowUtc, string reason)
