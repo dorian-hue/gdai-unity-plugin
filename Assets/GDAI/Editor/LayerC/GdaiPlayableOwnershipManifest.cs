@@ -113,6 +113,31 @@ namespace GDAI.Bridge.Editor.LayerC
                     });
                 m.owned_scene_objects = m.owned_scene_objects.OrderBy(o => o.name, StringComparer.Ordinal).ToList();
 
+                // ── T4 0J · additive-merge preservation of the v2 animation_assets section ─────────────────
+                // The composer owns ONLY the v1/playable fields built above. The additive v2 `animation_assets`
+                // section is owned by the animation materializer. This fresh object drops it (NullValueHandling
+                // .Ignore) unless we re-attach it — which on a re-sync would leave the pre-mutation guard with
+                // prior==null and make it fail-closed (GUARD_UNRECORDED_OWNED_STAMP) on the still-labelled prior
+                // sheet. Single authority manifest: preserve the section VERBATIM (no fingerprint recompute) when
+                // this write is for the SAME identity and the prior section is structurally valid. Cross-identity
+                // animation migration needs a separate transition contract (out of scope) → fail closed, no write.
+                var prior = Load();
+                if (prior != null && prior.animation_assets != null)
+                {
+                    bool sameIdentity = prior.project_id == projectId
+                        && prior.snapshot_id == snapshotId
+                        && prior.contract_revision == contract.contract_revision
+                        && prior.contract_sha256 == contractSha256;
+                    if (!sameIdentity)
+                    { error = "MANIFEST_PRESERVE_IDENTITY_MISMATCH: prior animation_assets belongs to a different project/snapshot/contract; refusing to orphan it (transition contract required)"; return false; }
+                    if (!AnimationSectionStructurallyValid(prior.animation_assets, snapshotId))
+                    { error = "MANIFEST_PRESERVE_MALFORMED_ANIMATION_SECTION: prior v2 animation_assets is malformed; refusing to write (would drop ownership)"; return false; }
+                    // same identity + valid → re-attach the animation ownership records unchanged; schema stays v2.
+                    m.animation_assets = prior.animation_assets;
+                    m.schema_version = GdaiPlayableAssetsManifest.SchemaVersionV2;
+                }
+                // (no prior, or prior has no animation section: write the plain v1 manifest as before — nothing to preserve.)
+
                 // ensure owned folder exists
                 var dirAsset = Path.GetDirectoryName(ManifestPath).Replace('\\', '/');
                 EnsureFolder(dirAsset);
@@ -138,6 +163,19 @@ namespace GDAI.Bridge.Editor.LayerC
                 return JsonConvert.DeserializeObject<GdaiPlayableAssetsManifest>(File.ReadAllText(abs));
             }
             catch { return null; }
+        }
+
+        // Minimal structural validity of a prior v2 animation_assets section before the composer re-attaches
+        // it: a materialization pin whose snapshot_id matches this write (contract requires equality), and
+        // non-null record lists with at least one owned artifact. A present-but-broken/empty section is NOT
+        // silently converted to an empty section — the composer fails closed instead.
+        static bool AnimationSectionStructurallyValid(Animation.GdaiAnimationAssetsSection s, string expectedSnapshotId)
+        {
+            if (s == null || s.materialization == null) return false;
+            if (string.IsNullOrEmpty(s.materialization.snapshot_id) || s.materialization.snapshot_id != expectedSnapshotId) return false;
+            if (s.raw_sheets == null || s.sprites == null || s.clips == null || s.controllers == null) return false;
+            if (s.raw_sheets.Count == 0 && s.clips.Count == 0 && s.controllers.Count == 0) return false;
+            return true;
         }
 
         /// <summary>
