@@ -1,3 +1,34 @@
+## v0.1.0-alpha.8.10 (2026-07-29)
+
+- Fix: the FIRST Complete Sync of a fresh project now produces the same scene as
+  every later sync. Three closures, all in the sync/compose path:
+  1. Deferred-completion closure. A fresh sync defers composition to the domain
+     reload; the tail of `CompleteExportSync` (save assets, save open scenes,
+     outcome measurement, export-completion receipt) was skipped and the resume
+     never compensated, so the first sync left an incomplete unsaved scene and
+     wrote no receipt. There is now a single `FinalizeSync` definition that both
+     the inline and the resume path call exactly once, guarded by a read-and-
+     delete latch keyed to the project/snapshot being finalized.
+  2. Deterministic background geometry. The scene background was scaled from
+     `Camera.main`, which does not exist yet on a fresh canonical scene (falling
+     back to a 20-unit view) and otherwise carries the live Editor viewport
+     aspect — so the saved scene was a function of the operator's window layout.
+     Coverage is now derived from the imported contract's camera spec
+     (`SolveOrthographicSize` x `target_aspect`), making the geometry identical
+     on the first sync, on every later sync, and on every machine.
+  3. Canonical Build Settings. Registering the canonical scene now disables the
+     template `SampleScene` inside a GDAI-owned scaffold, so `Main` is the only
+     enabled entry. Scoped to the binding-marked scaffold; user scenes in any
+     other project are never touched.
+- Fix: the semantic role map is imported into the AssetDatabase as it is written,
+  so a sync leaves no pending `.meta` behind.
+- Fix: Complete Sync fetches the exact `code_bundle_snapshot_id` recorded in the
+  project binding when present, instead of always asking for the latest bundle.
+  A pinned id that cannot be served fails the sync rather than silently
+  importing a different artifact.
+- No public API change. Release-only version bump over the reviewed code head;
+  the runtime and test sources are byte-identical to that head.
+
 ## v0.1.0-alpha.8.9 (2026-07-14)
 
 - Fix: the composed playable export now fully passes its own shipped structure
