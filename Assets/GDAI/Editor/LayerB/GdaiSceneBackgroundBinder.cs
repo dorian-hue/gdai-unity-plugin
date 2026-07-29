@@ -96,6 +96,27 @@ namespace GDAI.Bridge.Editor.LayerB
             return PlaceOrUpdate(bg.unity_path, bg.asset_id, projectId, out message);
         }
 
+        // ----------------------------------------------------------------------------
+        // B-1 amendment: dialog-free pointer-driven re-place for the canonical-scene
+        // sync sequence. The auto-hook above runs inside the IMPORT chain against
+        // whatever scene is open at that moment; on a fresh (deferred) sync that scene
+        // is discarded by the domain reload — the pointer persisted next to the
+        // registry is exactly the no-DTO replay handle for the post-reload resume
+        // (and for the inline path after the canonical scene opens). Idempotent:
+        // updates the same GDAI_SceneBackground in place, never duplicates.
+        // ----------------------------------------------------------------------------
+        public static bool TryPlaceFromPointer(out string message)
+        {
+            message = null;
+            var ptr = LoadPointer();
+            if (ptr == null || string.IsNullOrEmpty(ptr.unity_path))
+            {
+                message = "no background pointer (bundle carried no scene_background — nothing to re-place)";
+                return false;
+            }
+            return PlaceOrUpdate(ptr.unity_path, ptr.asset_id, ptr.source_project_id, out message);
+        }
+
         // ------------------------------ menus ------------------------------
 
         [MenuItem("GDAI/Assets · Place Scene Background")]

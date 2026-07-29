@@ -200,6 +200,27 @@ namespace GDAI.Bridge.Editor.Tests
             CollectionAssert.AreEqual(first, second, "re-registration must be a no-op");
         }
 
+        // B-1 amendment: the resume path re-places the scene background from the
+        // persisted pointer. Without a pointer it must decline cleanly (no throw,
+        // no scene mutation) — the fresh-sync no-background case.
+        [Test]
+        public void BackgroundReplay_NoPointer_DeclinesCleanly()
+        {
+            string ptr = Path.Combine(Directory.GetCurrentDirectory(),
+                GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.PointerPath.Replace('/', Path.DirectorySeparatorChar));
+            string backup = null;
+            if (File.Exists(ptr)) { backup = ptr + ".test-bak"; File.Move(ptr, backup); }
+            try
+            {
+                Assert.IsFalse(GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.TryPlaceFromPointer(out var msg));
+                StringAssert.Contains("no background pointer", msg);
+            }
+            finally
+            {
+                if (backup != null) File.Move(backup, ptr);
+            }
+        }
+
         [Test]
         public void NonGdaiProject_KeepsLegacyAppendAndEnable_SampleSceneStaysEnabled()
         {

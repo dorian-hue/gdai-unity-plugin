@@ -1143,6 +1143,20 @@ namespace GDAI.Bridge.Editor.LayerA
                     return;
                 }
 
+                // B-1 amendment (hot-regression finding): the import chain placed the
+                // scene background against the pre-canonical-open scene; re-place it
+                // from the persisted pointer now that the canonical scene is open
+                // (idempotent update — never duplicates; no-op without a background).
+                try
+                {
+                    if (GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.TryPlaceFromPointer(out string bgReplayMsg))
+                        Debug.Log("[GDAI][CompleteSync] scene background: " + bgReplayMsg);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[GDAI][CompleteSync] scene background re-place skipped: " + e.Message);
+                }
+
                 // 7-9: scene elements, spawn markers, arena bounds, demo
                 //      obstacle, edge blockers (existing Layer B seams) — now guaranteed
                 //      to land in the open canonical scene (B-1b).

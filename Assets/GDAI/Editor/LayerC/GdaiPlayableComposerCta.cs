@@ -127,6 +127,15 @@ namespace GDAI.Bridge.Editor.LayerC
             }
             try
             {
+                // B-1 amendment (hot-regression finding): the scene background is placed
+                // by the IMPORT chain (UNITY-SCENE-BG-BIND-1) against the pre-reload
+                // scene, which this fresh-sync reload discarded — the one scene mutation
+                // outside the five seams. Re-place it from the persisted pointer into
+                // the now-open canonical scene (idempotent; no-op when the bundle
+                // carried no background).
+                GdaiSceneBackgroundBinder.TryPlaceFromPointer(out string bgMsg);
+                Debug.Log("[GDAI][ResumeCompose] scene background: " + bgMsg);
+
                 GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
                 var spawn = GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
                 Debug.Log("[GDAI][ResumeCompose] spawn markers: " + spawn);
