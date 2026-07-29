@@ -38,7 +38,7 @@ namespace GDAI.Bridge.Editor.Tests
             project_id = Project,
             snapshot_id = Snapshot,
             snapshot_revision = "coherent",
-            plugin_version = "0.1.0-alpha.8.9",
+            plugin_version = "0.1.0-alpha.8.10",
             generated_file_count = 20,
             binary_asset_count = 3,
             preserved_meta_count = 7,
@@ -59,7 +59,7 @@ namespace GDAI.Bridge.Editor.Tests
             Assert.AreEqual(Project, taken.project_id);
             Assert.AreEqual(Snapshot, taken.snapshot_id);
             Assert.AreEqual("coherent", taken.snapshot_revision);
-            Assert.AreEqual("0.1.0-alpha.8.9", taken.plugin_version);
+            Assert.AreEqual("0.1.0-alpha.8.10", taken.plugin_version);
             Assert.AreEqual(20, taken.generated_file_count);
             Assert.AreEqual(3, taken.binary_asset_count);
             Assert.AreEqual(7, taken.preserved_meta_count);
