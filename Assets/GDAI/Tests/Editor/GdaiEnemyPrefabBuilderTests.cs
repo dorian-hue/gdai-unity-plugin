@@ -31,11 +31,17 @@ namespace GDAI.Bridge.Editor.Tests
             return File.ReadAllText(AssetDatabase.GUIDToAssetPath(g[0]));
         }
 
+        private EditorBuildSettingsScene[] _savedBuildScenes;
+
         [SetUp]
         public void SetUp()
         {
             _contract = GdaiPlayableContract.Parse(FixtureJson()).Contract;
             Assert.IsNotNull(_contract, "fixture must parse");
+            // B-2 hygiene: this fixture reaches EnsureSavedAndInBuild and never cleaned
+            // Build Settings at all (the Main ENTRY leaked even pre-B-2; B-2 adds
+            // disable-SampleScene). Snapshot and restore the full list.
+            _savedBuildScenes = EditorBuildSettings.scenes;
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             // hermetic start: remove any prefab/folder left by a prior (possibly killed) run so the
@@ -58,6 +64,7 @@ namespace GDAI.Bridge.Editor.Tests
             if (File.Exists(ScenePath)) AssetDatabase.DeleteAsset(ScenePath);
             if (_sprite != null) Object.DestroyImmediate(_sprite);
             if (_tex != null) Object.DestroyImmediate(_tex);
+            EditorBuildSettings.scenes = _savedBuildScenes;
         }
 
         [Test]
