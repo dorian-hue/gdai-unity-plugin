@@ -52,6 +52,19 @@ namespace GDAI.Bridge.Editor.LayerC
         private static bool GeneratedTypesCompiled() => GdaiSceneObjectComposer.ResolveComponentType(ProbeType) != null;
 
         /// <summary>
+        /// B-1: true when RunOrDeferFromImportedContract would defer — the imported bundle
+        /// carries the rev4 contract but its generated types have not compiled yet. The
+        /// window CTA checks this BEFORE running the Layer-B seams so no scene work lands
+        /// on pre-reload state that the imminent domain reload would discard (MNT-10).
+        /// Same two facts the defer branch itself tests; keep them in lockstep.
+        /// </summary>
+        public static bool WouldDeferFromImportedContract()
+        {
+            string cpath = Path.Combine(Root(), "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
+            return File.Exists(cpath) && !GeneratedTypesCompiled();
+        }
+
+        /// <summary>
         /// Window-CTA entry after a bundle import. If the contract is absent → NotPresent (legacy path).
         /// If the generated code is already compiled → compose now (re-sync / TREE-C reopen). Otherwise the
         /// code is compiling on the imminent reload → persist a pending-compose marker and return
@@ -97,8 +110,71 @@ namespace GDAI.Bridge.Editor.LayerC
             if (pc == null || string.IsNullOrEmpty(pc.project_id)) { ClearPendingCompose(root); return false; }
             if (!GeneratedTypesCompiled()) { detail = "generated code not compiled yet — will retry on the next reload"; return false; }
             ClearPendingCompose(root); // run once
-            outcome = RunFromImportedContract(pc.project_id, pc.snapshot_id,
-                string.IsNullOrEmpty(pc.scene_path) ? "Assets/Scenes/Main.unity" : pc.scene_path, nowUtc, out result, out detail);
+
+            // B-1 (MNT-10): the deferred first sync lost every pre-reload scene mutation —
+            // the reload discards unsaved scenes. The resume therefore owns the WHOLE scene
+            // sequence: open the canonical scene, run the Layer-B seams into it, compose,
+            // then run the single shared finalization from the context the window persisted
+            // before the reload. Order matches the proven inline route (D1 sync2).
+            string scenePath = string.IsNullOrEmpty(pc.scene_path) ? "Assets/Scenes/Main.unity" : pc.scene_path;
+            var canonical = GdaiCanonicalScene.EnsureSavedAndInBuild(scenePath);
+            if (!canonical.Ok)
+            {
+                GdaiSyncFinalization.Clear(root); // never finalize a failed resume
+                outcome = ImportedContractOutcome.Failed;
+                detail = "canonical scene: " + canonical.Error;
+                return true;
+            }
+            try
+            {
+                GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
+                var spawn = GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
+                Debug.Log("[GDAI][ResumeCompose] spawn markers: " + spawn);
+                GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
+                GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
+                GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
+            }
+            catch (Exception e)
+            {
+                GdaiSyncFinalization.Clear(root);
+                outcome = ImportedContractOutcome.Failed;
+                detail = "layer-b seams: " + e.Message;
+                return true;
+            }
+
+            outcome = RunFromImportedContract(pc.project_id, pc.snapshot_id, scenePath, nowUtc, out result, out detail);
+
+            // B-1 finalization — exactly once, only after a composed scene, only with the
+            // context persisted for THIS operation (TryTake is the read+delete latch and
+            // refuses a project/snapshot mismatch).
+            if (outcome == ImportedContractOutcome.Composed)
+            {
+                if (GdaiSyncFinalization.TryTake(root, pc.project_id, pc.snapshot_id, out var fctx))
+                {
+                    var fin = GdaiSyncFinalization.FinalizeSync(root, fctx, nowUtc);
+                    if (fin.Ok)
+                    {
+                        detail = detail + " · finalized: " + fin.SceneElementsCount + " scene element(s), receipt " + Path.GetFileName(fin.ReceiptPath);
+                    }
+                    else
+                    {
+                        detail = detail + " · FINALIZE FAILED: " + fin.FailPhase + " (no receipt written)";
+                        Debug.LogError("[GDAI][ResumeCompose] finalize failed: " + fin.FailPhase);
+                    }
+                }
+                else
+                {
+                    // No valid persisted context (pre-B-1 defer, or consumed already). Fail
+                    // closed on the receipt — never invent import stats — but keep the scene:
+                    // save what the composer built so the objects survive the next reload.
+                    UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
+                    Debug.LogWarning("[GDAI][ResumeCompose] no pending finalization context — scene saved, no completion receipt written");
+                }
+            }
+            else
+            {
+                GdaiSyncFinalization.Clear(root); // failed compose: drop the stale context, no receipt
+            }
             return true;
         }
 

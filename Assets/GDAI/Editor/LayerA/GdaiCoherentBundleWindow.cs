@@ -1113,8 +1113,39 @@ namespace GDAI.Bridge.Editor.LayerA
                 await RunCompleteFetchImport();
                 if (_status != BundleStatus.RefreshTriggered) { failPhase = "FETCH_IMPORT"; return; }
 
+                // B-1b (MNT-10): the canonical scene must be open BEFORE any scene work.
+                // The Layer-B seams used to run against whatever scene happened to be open
+                // (a fresh project's Untitled); the reload/compose then discarded them and
+                // the first sync silently lost the background and arena.
+                var canonical = GDAI.Bridge.Editor.LayerC.GdaiCanonicalScene.EnsureSavedAndInBuild("Assets/Scenes/Main.unity");
+                if (!canonical.Ok) { failPhase = "CANONICAL_SCENE: " + canonical.Error; return; }
+
+                // B-1 route decision BEFORE the seams: a deferred fresh sync must not touch
+                // the scene now — the imminent domain reload discards unsaved objects. The
+                // resume hook owns the whole scene sequence after the reload (canonical open
+                // → Layer-B seams → compose) and then runs the single shared finalization
+                // from the context persisted here.
+                if (GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.WouldDeferFromImportedContract())
+                {
+                    var deferred = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
+                        _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
+                        out _, out string deferDetail);
+                    if (deferred != GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.DeferredToReload)
+                    {
+                        failPhase = "PLAYABLE_COMPOSE: expected deferral, got " + deferred + " — " + deferDetail;
+                        return;
+                    }
+                    GdaiSyncFinalization.Persist(GdaiProjectBinding.DefaultProjectRoot(), BuildFinalizationContext(startedUtc));
+                    Debug.Log("[GDAI][CompleteSync] " + deferDetail);
+                    _bindingState = GdaiBindingState.SyncComplete;
+                    SetStatus(BundleStatus.RefreshTriggered,
+                        "Complete Sync: generated code imported · the playable scene composes and finalizes automatically once Unity finishes compiling (no further clicks).");
+                    return;
+                }
+
                 // 7-9: scene elements, spawn markers, arena bounds, demo
-                //      obstacle, edge blockers (existing Layer B seams).
+                //      obstacle, edge blockers (existing Layer B seams) — now guaranteed
+                //      to land in the open canonical scene (B-1b).
                 GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
                 var spawn = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
                 Debug.Log("[GDAI][CompleteSync] spawn markers: " + spawn);
@@ -1137,13 +1168,16 @@ namespace GDAI.Bridge.Editor.LayerA
                         Debug.Log("[GDAI][CompleteSync] playable composer: " + playableDetail);
                         break;
                     case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.DeferredToReload:
-                        // Fresh sync: generated code is compiling; the resume hook composes + writes the
-                        // hard receipt automatically after the imminent domain reload. Still one click,
-                        // zero manual steps — just finishes on the other side of the reload.
+                        // Race guard: the generated types decompiled between the WouldDefer
+                        // check and the run (an asset import can kick a recompile). The seams
+                        // above are unsaved and the reload will discard them — exactly the
+                        // MNT-10 shape — so hand the whole scene sequence to the resume hook,
+                        // same as a fresh sync, and let it finalize from the persisted context.
+                        GdaiSyncFinalization.Persist(GdaiProjectBinding.DefaultProjectRoot(), BuildFinalizationContext(startedUtc));
                         Debug.Log("[GDAI][CompleteSync] " + playableDetail);
                         _bindingState = GdaiBindingState.SyncComplete;
                         SetStatus(BundleStatus.RefreshTriggered,
-                            "Complete Sync: generated code imported · the playable scene composes automatically once Unity finishes compiling (no further clicks).");
+                            "Complete Sync: generated code imported · the playable scene composes and finalizes automatically once Unity finishes compiling (no further clicks).");
                         return;
                     case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.NotPresent:
                         Debug.Log("[GDAI][CompleteSync] " + playableDetail + " — legacy minimal scene prep");
@@ -1154,40 +1188,15 @@ namespace GDAI.Bridge.Editor.LayerA
                         return;
                 }
 
-                // 11-12: save assets + open scene.
-                AssetDatabase.SaveAssets();
-                UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
-
-                // Outcome measurement (fail closed on empty results).
-                int elementCount = 0, colliderCount = 0;
-                foreach (var col in UnityEngine.Object.FindObjectsByType<PolygonCollider2D>(FindObjectsSortMode.None)) { colliderCount++; _ = col; }
-                var sceneRoot = GameObject.Find("GDAI_SceneAssembly");
-                if (sceneRoot != null) elementCount = sceneRoot.transform.childCount;
-                string scenePath = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path;
-                if (string.IsNullOrEmpty(scenePath)) { failPhase = "SCENE_SAVE"; return; }
-
-                // 13: completion receipt (PASS only).
-                var receipt = new GdaiExportReceiptData
-                {
-                    project_id = _binding.project_id,
-                    snapshot_id = _sumSnapshot,
-                    snapshot_revision = _sumSource,
-                    plugin_version = PluginVersion,
-                    generated_file_count = _sumAssetCount,
-                    binary_asset_count = _lastBinaryAssetCount,
-                    preserved_meta_count = _lastPreservedMetaCount,
-                    backup_path = ToProjectRelative(_lastBackupPath),
-                    scene_path = scenePath,
-                    scene_elements_count = elementCount,
-                    collider_count = colliderCount,
-                    started_at = startedUtc.ToString("o"),
-                    completed_at = DateTime.UtcNow.ToString("o"),
-                    result = "PASS",
-                };
-                string receiptPath = GdaiExportReceipt.Write(GdaiProjectBinding.DefaultProjectRoot(), receipt, DateTime.UtcNow);
+                // 11-13: single shared finalization (B-1) — save assets + open scene,
+                // measure the outcome, write the PASS receipt. The SAME function the
+                // deferred resume path runs; there is exactly one finalization definition.
+                var fin = GdaiSyncFinalization.FinalizeSync(
+                    GdaiProjectBinding.DefaultProjectRoot(), BuildFinalizationContext(startedUtc), DateTime.UtcNow);
+                if (!fin.Ok) { failPhase = fin.FailPhase; return; }
                 _bindingState = GdaiBindingState.SyncComplete;
                 SetStatus(BundleStatus.RefreshTriggered,
-                    $"Complete Sync PASS · {elementCount} scene element(s) · {colliderCount} collider(s) · receipt {Path.GetFileName(receiptPath)}");
+                    $"Complete Sync PASS · {fin.SceneElementsCount} scene element(s) · {fin.ColliderCount} collider(s) · receipt {Path.GetFileName(fin.ReceiptPath)}");
             }
             catch (Exception e)
             {
@@ -1209,8 +1218,40 @@ namespace GDAI.Bridge.Editor.LayerA
         private async Task RunCompleteFetchImport()
         {
             string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
-            await RunProxyFetch(proxyUrl, _selProjectId, latest: true, snapshotId: "", token: _pluginToken, import: true);
+            // B-3 (exact snapshot id): the exported binding pins the snapshot the export
+            // was built against. When present, Complete Sync fetches THAT id — never a
+            // racy latest — so the binding, the import and the receipt all name the same
+            // artifact. An exact fetch that fails FAILS the sync (fail closed); there is
+            // no silent fallback to latest. latest remains only for legacy bindings that
+            // carry no id.
+            string boundSnapshot = _binding != null ? (_binding.code_bundle_snapshot_id ?? "").Trim() : "";
+            if (boundSnapshot.Length > 0)
+            {
+                Debug.Log("[GDAI][CompleteSync] exact-snapshot fetch from binding: " + boundSnapshot);
+                await RunProxyFetch(proxyUrl, _selProjectId, latest: false, snapshotId: boundSnapshot, token: _pluginToken, import: true);
+            }
+            else
+            {
+                await RunProxyFetch(proxyUrl, _selProjectId, latest: true, snapshotId: "", token: _pluginToken, import: true);
+            }
         }
+
+        // B-1: everything the finalization needs that only this window knows at import
+        // time — persisted across the domain reload on the deferred route, consumed
+        // inline otherwise. One builder so both routes describe the same import.
+        private GdaiSyncFinalizationContext BuildFinalizationContext(DateTime startedUtc) =>
+            new GdaiSyncFinalizationContext
+            {
+                project_id = _binding.project_id,
+                snapshot_id = _sumSnapshot,
+                snapshot_revision = _sumSource,
+                plugin_version = PluginVersion,
+                generated_file_count = _sumAssetCount,
+                binary_asset_count = _lastBinaryAssetCount,
+                preserved_meta_count = _lastPreservedMetaCount,
+                backup_path = ToProjectRelative(_lastBackupPath),
+                started_at = startedUtc.ToString("o"),
+            };
 
         private static string ToProjectRelative(string path)
         {

@@ -69,24 +69,53 @@ namespace GDAI.Bridge.Editor.LayerC
             return r;
         }
 
-        /// <summary>Make the canonical scene the single enabled Build Settings entry (idempotent).</summary>
+        // B-2 (MNT-8): the one scene this normalization may ever disable — the template's
+        // own SampleScene inside a GDAI-owned scaffold. User scenes are NEVER touched.
+        private const string TemplateSampleScenePath = "Assets/Scenes/SampleScene.unity";
+
+        // GDAI-owned scaffold marker: the exported project carries the binding file. Its
+        // presence scopes the build-settings normalization; in any other project the
+        // legacy append-and-enable behaviour is preserved unchanged.
+        private static bool IsGdaiOwnedScaffold() =>
+            File.Exists(Path.Combine(Directory.GetCurrentDirectory(),
+                GDAI.Bridge.Editor.LayerA.GdaiProjectBinding.RelativePath));
+
+        /// <summary>Make the canonical scene the single enabled Build Settings entry (idempotent).
+        /// B-2: inside a GDAI-owned scaffold the template SampleScene is disabled (kept in the
+        /// list, never deleted) so the canonical scene is the only enabled entry; previously
+        /// this registration was append-and-enable only and SampleScene stayed enabled forever
+        /// (MNT-8). Scoped fail-safe: gated on the exported binding marker, and the only entry
+        /// ever disabled is the template's own SampleScene.</summary>
         public static bool AddToBuildSettings(string scenePath)
         {
             var existing = EditorBuildSettings.scenes.ToList();
             var match = existing.FirstOrDefault(s => s.path == scenePath);
+            bool changed = false;
             if (match != null)
             {
                 if (!match.enabled)
                 {
                     match.enabled = true;
-                    EditorBuildSettings.scenes = existing.ToArray();
+                    changed = true;
                 }
             }
             else
             {
                 existing.Add(new EditorBuildSettingsScene(scenePath, true));
-                EditorBuildSettings.scenes = existing.ToArray();
+                changed = true;
             }
+            if (IsGdaiOwnedScaffold())
+            {
+                foreach (var s in existing)
+                {
+                    if (s.enabled && s.path == TemplateSampleScenePath && s.path != scenePath)
+                    {
+                        s.enabled = false;
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) EditorBuildSettings.scenes = existing.ToArray();
             return EditorBuildSettings.scenes.Any(s => s.path == scenePath && s.enabled);
         }
 
