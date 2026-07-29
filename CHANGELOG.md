@@ -26,8 +26,13 @@
   project binding when present, instead of always asking for the latest bundle.
   A pinned id that cannot be served fails the sync rather than silently
   importing a different artifact.
-- No public API change. Release-only version bump over the reviewed code head;
-  the runtime and test sources are byte-identical to that head.
+- No public API, gameplay, control-flow, or schema change.
+
+  Relative to the reviewed code head bd9428a, the only runtime-source delta is
+  the PluginVersion release-identity constant in
+  GdaiCoherentBundleWindow.cs. The only test-source delta is the two matched
+  round-trip version fixtures in GdaiSyncFinalizationTests.cs. All other runtime
+  and test source bytes are unchanged.
 
 ## v0.1.0-alpha.8.9 (2026-07-14)
 
