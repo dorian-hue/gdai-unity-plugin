@@ -6,9 +6,13 @@ using System;
 using System.IO;
 using System.Linq;
 using GDAI.Bridge.Editor.LayerA;
+using GDAI.Bridge.Editor.LayerB;
 using GDAI.Bridge.Editor.LayerC;
 using NUnit.Framework;
 using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace GDAI.Bridge.Editor.Tests
 {
@@ -124,6 +128,160 @@ namespace GDAI.Bridge.Editor.Tests
             Assert.IsFalse(fin.Ok);
             Assert.AreEqual("FINALIZE_CONTEXT_MISSING", fin.FailPhase);
             Assert.IsFalse(Directory.Exists(Path.Combine(_root, ".gdai", "receipts")), "no receipt on failure");
+        }
+    }
+
+    // ALPHA-B FIX A: background coverage must derive from the CONTRACT camera spec —
+    // a pure function of snapshot data — never from Camera.main (null on a fresh sync;
+    // and even when present, cam.aspect is the live Editor viewport, which made
+    // Main.unity a function of the operator's window layout). Verdict tests 1-3.
+    public class GdaiSceneBackgroundCoverageTests
+    {
+        private Texture2D _tex;
+        private Sprite _sprite;      // 1024 px @ 100 PPU → 10.24 world units
+        private GameObject _target;
+        private readonly System.Collections.Generic.List<GameObject> _cleanup = new System.Collections.Generic.List<GameObject>();
+
+        // The R2 regression contract's camera block.
+        private static GdaiPlayableContract.CameraSpec Spec() => new GdaiPlayableContract.CameraSpec
+        {
+            padding_ratio = 0.1f,
+            target_aspect = 16f / 9f,
+            world_bounds = new GdaiPlayableContract.WorldBounds { width = 9.6f, height = 5.4f },
+            position = new GdaiPlayableContract.Vec3 { x = 0f, y = 0f, z = -10f },
+        };
+
+        // coverW / spriteW = (2 · 2.97 · 16/9) / 10.24
+        private const float ExpectedScale = 1.03125f;
+        // fallback branch: max(20 · 16/9, 20) / 10.24
+        private const float FallbackScale = 3.4722226f;
+
+        [SetUp]
+        public void SetUp()
+        {
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            _tex = new Texture2D(1024, 1024);
+            _sprite = Sprite.Create(_tex, new Rect(0, 0, 1024, 1024), new Vector2(0.5f, 0.5f), 100f);
+            _target = new GameObject("bg-under-test");
+            _cleanup.Add(_target);
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            foreach (var go in _cleanup) if (go != null) Object.DestroyImmediate(go);
+            _cleanup.Clear();
+            if (_sprite != null) Object.DestroyImmediate(_sprite);
+            if (_tex != null) Object.DestroyImmediate(_tex);
+        }
+
+        private float ScaleWith(GdaiPlayableContract.CameraSpec spec)
+        {
+            GdaiSceneBackgroundBinder.PositionAndScaleToCover(_target.transform, _sprite, spec);
+            return _target.transform.localScale.x;
+        }
+
+        private Camera MakeMainCamera(float aspect)
+        {
+            var go = new GameObject("Main Camera");
+            _cleanup.Add(go);
+            go.tag = "MainCamera";
+            var cam = go.AddComponent<Camera>();
+            cam.orthographic = true;
+            cam.orthographicSize = 2.97f;
+            cam.transform.position = new Vector3(0f, 0f, -10f);
+            cam.aspect = aspect;
+            return cam;
+        }
+
+        [Test]
+        public void ContractSpec_YieldsDeterministicScale()
+        {
+            Assert.That(ScaleWith(Spec()), Is.EqualTo(ExpectedScale).Within(1e-4f),
+                "scale must be the contract fit_arena solve, 10.56/10.24");
+            Assert.AreEqual(0f, _target.transform.position.x, 1e-5f);
+            Assert.AreEqual(0f, _target.transform.position.y, 1e-5f);
+            Assert.AreEqual(0f, _target.transform.position.z, 1e-5f, "background sits on the gameplay plane");
+        }
+
+        [Test]
+        public void ContractSpec_IsCameraAndViewportInvariant()
+        {
+            // no camera at all (the fresh-sync shape)
+            float noCam = ScaleWith(Spec());
+            // camera present with one viewport aspect
+            var cam = MakeMainCamera(1.193f);
+            float aspectA = ScaleWith(Spec());
+            // same camera, different viewport aspect (the resize-the-Game-view shape)
+            cam.aspect = 2.0f;
+            float aspectB = ScaleWith(Spec());
+
+            Assert.AreEqual(noCam, aspectA, 1e-6f, "camera presence must not change the scale");
+            Assert.AreEqual(aspectA, aspectB, 1e-6f, "viewport aspect must not change the scale");
+            Assert.That(noCam, Is.EqualTo(ExpectedScale).Within(1e-4f));
+        }
+
+        [Test]
+        public void ContractSpec_NeverFallsBackToTwentyUnits()
+        {
+            Assert.That(ScaleWith(Spec()), Is.Not.EqualTo(FallbackScale).Within(1e-3f),
+                "with a spec supplied the 20-unit Camera.main-null fallback must be unreachable");
+        }
+    }
+
+    // ALPHA-B FIX B: the role-map writer must settle the AssetDatabase inside the same
+    // call — its .meta being minted by whatever refresh runs NEXT is what broke the
+    // meta-GUID idempotency gate. Verdict test 4.
+    public class GdaiSemanticRoleMapSettlementTests
+    {
+        private string _dirAbs;
+        private string _backupDir;
+
+        [SetUp]
+        public void SetUp()
+        {
+            _dirAbs = Path.Combine(Directory.GetCurrentDirectory(), GdaiSemanticRoleMap.RoleMapDir.Replace('/', Path.DirectorySeparatorChar));
+            // preserve a real role map (project-level confirmed truth) byte-for-byte
+            if (Directory.Exists(_dirAbs))
+            {
+                _backupDir = _dirAbs + ".test-bak";
+                Directory.Move(_dirAbs, _backupDir);
+                if (File.Exists(_dirAbs + ".meta")) File.Move(_dirAbs + ".meta", _backupDir + ".meta");
+            }
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            if (Directory.Exists(_dirAbs)) Directory.Delete(_dirAbs, true);
+            if (File.Exists(_dirAbs + ".meta")) File.Delete(_dirAbs + ".meta");
+            if (_backupDir != null)
+            {
+                Directory.Move(_backupDir, _dirAbs);
+                if (File.Exists(_backupDir + ".meta")) File.Move(_backupDir + ".meta", _dirAbs + ".meta");
+                _backupDir = null;
+            }
+            AssetDatabase.Refresh();
+        }
+
+        [Test]
+        public void WriteFromBundle_SettlesAssetDatabaseInTheSameCall()
+        {
+            var data = new GdaiSemanticRoleMapData
+            {
+                project_id = "18bedbf4-3993-422b-97ce-e5eb910bb55c",
+                roles = new System.Collections.Generic.List<GdaiSemanticRoleEntry>
+                {
+                    new GdaiSemanticRoleEntry { role = "player", entity_id = "test-entity", source = "manual_confirmed" },
+                },
+            };
+            Assert.IsTrue(GdaiSemanticRoleMap.WriteFromBundle(data, out string msg), msg);
+            Assert.IsNotEmpty(AssetDatabase.AssetPathToGUID(GdaiSemanticRoleMap.RoleMapPath),
+                "the role map must have a GUID within the SAME call — no deferred refresh");
+            Assert.IsTrue(File.Exists(_dirAbs + ".meta"),
+                "the raw-created parent folder's .meta must be minted by the path-scoped import");
+            Assert.IsTrue(File.Exists(Path.Combine(_dirAbs, "gdai_semantic_role_map.json.meta")),
+                "the json's .meta must exist immediately after the write");
         }
     }
 

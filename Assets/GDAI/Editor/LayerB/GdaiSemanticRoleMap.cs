@@ -134,6 +134,14 @@ namespace GDAI.Bridge.Editor.LayerB
                 string abs = AbsolutePath();
                 Directory.CreateDirectory(Path.GetDirectoryName(abs));
                 File.WriteAllText(abs, JsonConvert.SerializeObject(data, Formatting.Indented));
+                // ALPHA-B FIX B: settle the AssetDatabase for this write inside the sync.
+                // This was the ONLY Assets/-writer in the sync chain without an ImportAsset:
+                // its .meta files were minted later by whatever refresh happened to run next,
+                // which broke the meta-GUID idempotency gate. The path-scoped import (every
+                // sibling writer's pattern) also mints the raw-created parent folder's .meta.
+                // Never AssetDatabase.Refresh() here — a full refresh can schedule a compile
+                // and domain reload mid-sync.
+                UnityEditor.AssetDatabase.ImportAsset(RoleMapPath);
                 message = $"role map written ({data.roles.Count} role(s)) → {RoleMapPath}";
                 return true;
             }

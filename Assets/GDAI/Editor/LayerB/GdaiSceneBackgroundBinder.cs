@@ -93,7 +93,26 @@ namespace GDAI.Bridge.Editor.LayerB
             // Persist the pointer first so the manual menu can re-place later without a DTO.
             WritePointer(bg, snapshotId, out _);
             string projectId = bg.source != null ? bg.source.project_id : null;
-            return PlaceOrUpdate(bg.unity_path, bg.asset_id, projectId, out message);
+            return PlaceOrUpdate(bg.unity_path, bg.asset_id, projectId, out message, LoadContractCameraSpec());
+        }
+
+        /// <summary>
+        /// The imported contract's camera spec, or null when no valid contract is on disk.
+        /// This is the DETERMINISTIC coverage authority: the same read the composer performs
+        /// (GdaiPlayableComposerCta), so the background is sized from the snapshot rather
+        /// than from whatever the Editor viewport happens to be right now.
+        /// </summary>
+        public static GdaiPlayableContract.CameraSpec LoadContractCameraSpec()
+        {
+            try
+            {
+                string path = Path.Combine(Directory.GetCurrentDirectory(),
+                    "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
+                if (!File.Exists(path)) return null;
+                var parse = GdaiPlayableContract.Parse(File.ReadAllText(path));
+                return parse.Ok ? parse.Contract.camera : null;
+            }
+            catch { return null; }
         }
 
         // ----------------------------------------------------------------------------
@@ -114,7 +133,7 @@ namespace GDAI.Bridge.Editor.LayerB
                 message = "no background pointer (bundle carried no scene_background — nothing to re-place)";
                 return false;
             }
-            return PlaceOrUpdate(ptr.unity_path, ptr.asset_id, ptr.source_project_id, out message);
+            return PlaceOrUpdate(ptr.unity_path, ptr.asset_id, ptr.source_project_id, out message, LoadContractCameraSpec());
         }
 
         // ------------------------------ menus ------------------------------
@@ -140,7 +159,7 @@ namespace GDAI.Bridge.Editor.LayerB
                 return;
             }
 
-            bool ok = PlaceOrUpdate(ptr.unity_path, ptr.asset_id, ptr.source_project_id, out string msg);
+            bool ok = PlaceOrUpdate(ptr.unity_path, ptr.asset_id, ptr.source_project_id, out string msg, LoadContractCameraSpec());
             EditorUtility.DisplayDialog("GDAI · Place Scene Background",
                 (ok ? "Done.\n\n" : "Could not place.\n\n") + msg, "OK");
         }
@@ -160,7 +179,8 @@ namespace GDAI.Bridge.Editor.LayerB
         /// Create-or-update the deterministic GDAI_SceneBackground object from an imported
         /// Sprite at <paramref name="unityPath"/>. Idempotent, Undo-able, never saves the scene.
         /// </summary>
-        public static bool PlaceOrUpdate(string unityPath, string assetId, string projectId, out string message)
+        public static bool PlaceOrUpdate(string unityPath, string assetId, string projectId, out string message,
+            GdaiPlayableContract.CameraSpec cameraSpec = null)
         {
             message = null;
 
@@ -213,7 +233,7 @@ namespace GDAI.Bridge.Editor.LayerB
 
             // Position + cover-scale (perspective/orthographic aware).
             Undo.RecordObject(go.transform, "GDAI · scene background transform");
-            PositionAndScaleToCover(go.transform, sprite);
+            PositionAndScaleToCover(go.transform, sprite, cameraSpec);
 
             // Explicitly no collider: we never add one. Warn (don't mutate) if a stray one exists.
             bool strayCollider = go.GetComponent<Collider2D>() != null || go.GetComponent<Collider>() != null;
@@ -250,15 +270,32 @@ namespace GDAI.Bridge.Editor.LayerB
             return GameObject.Find(BackgroundObjectName);
         }
 
-        private static void PositionAndScaleToCover(Transform t, Sprite sprite)
+        // ALPHA-B FIX A (idempotency + determinism): with a contract camera spec, coverage
+        // derives ENTIRELY from snapshot data — the same fit_arena solve the composer's
+        // camera uses — so the persisted scale is a function of the snapshot, identical on
+        // sync 1/2/N, on every machine, at every Editor window size, headless or not.
+        // The old path read Camera.main: null on a fresh sync (the composer creates and
+        // tags the camera AFTER the background) → 20-unit fallback; and even when present,
+        // cam.aspect is the LIVE Game-view aspect → Main.unity became a function of the
+        // operator's window layout. Camera.main remains only as the no-contract fallback
+        // for the standalone menu path.
+        public static void PositionAndScaleToCover(Transform t, Sprite sprite,
+            GdaiPlayableContract.CameraSpec spec = null)
         {
             const float bgZ = 0f; // same plane as gameplay; sortingOrder handles draw order
             float coverH, coverW;
             Vector3 center;
 
-            var cam = Camera.main;
-            if (cam != null)
+            if (spec != null && spec.world_bounds != null && spec.target_aspect > 0f)
             {
+                coverH = 2f * spec.SolveOrthographicSize();
+                coverW = coverH * spec.target_aspect;
+                center = new Vector3(spec.position != null ? spec.position.x : 0f,
+                                     spec.position != null ? spec.position.y : 0f, bgZ);
+            }
+            else if (Camera.main != null)
+            {
+                var cam = Camera.main;
                 float dist = Mathf.Max(0.01f, Mathf.Abs(bgZ - cam.transform.position.z));
                 coverH = cam.orthographic
                     ? cam.orthographicSize * 2f
