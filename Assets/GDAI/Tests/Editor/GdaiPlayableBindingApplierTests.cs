@@ -29,11 +29,16 @@ namespace GDAI.Bridge.Editor.Tests
 
         private SerializedObject SoOf(string owned, string typeName) => new SerializedObject(Comp(owned, typeName));
 
+        private EditorBuildSettingsScene[] _savedBuildScenes;
+
         [SetUp]
         public void SetUp()
         {
             _contract = GdaiPlayableContract.Parse(FixtureJson()).Contract;
             Assert.IsNotNull(_contract, "fixture must parse");
+            // B-2 hygiene: AddToBuildSettings now also disables the template SampleScene
+            // in a GDAI-owned scaffold host — restore the full list, not just the entry.
+            _savedBuildScenes = EditorBuildSettings.scenes;
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             if (AssetDatabase.IsValidFolder("Assets/GDAI_Project")) AssetDatabase.DeleteAsset("Assets/GDAI_Project");
             GdaiCanonicalScene.EnsureSavedAndInBuild(ScenePath);
@@ -49,8 +54,7 @@ namespace GDAI.Bridge.Editor.Tests
         {
             if (File.Exists(ScenePath)) AssetDatabase.DeleteAsset(ScenePath);
             if (AssetDatabase.IsValidFolder("Assets/GDAI_Project")) AssetDatabase.DeleteAsset("Assets/GDAI_Project");
-            foreach (var s in EditorBuildSettings.scenes.Where(s => s.path == ScenePath).ToArray())
-                EditorBuildSettings.scenes = EditorBuildSettings.scenes.Where(x => x.path != ScenePath).ToArray();
+            EditorBuildSettings.scenes = _savedBuildScenes;
         }
 
         [Test]

@@ -106,11 +106,16 @@ namespace GDAI.Bridge.Editor.Tests
             AssetDatabase.Refresh();
         }
 
+        private EditorBuildSettingsScene[] _savedBuildScenes;
+
         [SetUp]
         public void SetUp()
         {
             _contract = GdaiPlayableContract.Parse(FixtureJson()).Contract;
             Assert.IsNotNull(_contract, "fixture must parse");
+            // B-2 hygiene: AddToBuildSettings now also disables the template SampleScene
+            // in a GDAI-owned scaffold host — restore the full list, not just the entry.
+            _savedBuildScenes = EditorBuildSettings.scenes;
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             CleanArtifacts();
         }
@@ -119,8 +124,7 @@ namespace GDAI.Bridge.Editor.Tests
         public void TearDown()
         {
             CleanArtifacts();
-            foreach (var s in EditorBuildSettings.scenes.Where(s => s.path == ScenePath).ToArray())
-                EditorBuildSettings.scenes = EditorBuildSettings.scenes.Where(x => x.path != ScenePath).ToArray();
+            EditorBuildSettings.scenes = _savedBuildScenes;
         }
 
         [Test]
