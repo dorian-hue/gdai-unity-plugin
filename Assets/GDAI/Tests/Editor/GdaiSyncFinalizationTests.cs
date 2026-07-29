@@ -167,11 +167,6 @@ namespace GDAI.Bridge.Editor.Tests
             if (!_bindingExisted) File.WriteAllText(_bindingPath, "{\"schema_version\":\"gdai.unity_export.v1\"}");
         }
 
-        private void UnmarkGdaiScaffold()
-        {
-            if (!_bindingExisted && File.Exists(_bindingPath)) File.Delete(_bindingPath);
-        }
-
         [Test]
         public void GdaiScaffold_DisablesTemplateSampleScene_NeverUserScenes()
         {
@@ -208,8 +203,11 @@ namespace GDAI.Bridge.Editor.Tests
         [Test]
         public void NonGdaiProject_KeepsLegacyAppendAndEnable_SampleSceneStaysEnabled()
         {
-            UnmarkGdaiScaffold();
-            if (File.Exists(_bindingPath)) Assert.Ignore("host project carries a real GDAI binding; legacy-path case not testable here");
+            // The legacy branch must EXECUTE even in a binding-marked host (a skip is not
+            // a verification): SetUp already backed up the binding content, so remove the
+            // marker for the duration of this test — TearDown restores it byte-for-byte.
+            if (File.Exists(_bindingPath)) File.Delete(_bindingPath);
+            Assert.IsFalse(File.Exists(_bindingPath), "binding marker must be absent for the legacy-path case");
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(Sample, true) };
 
             Assert.IsTrue(GdaiCanonicalScene.AddToBuildSettings(Canonical));
