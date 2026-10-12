@@ -22,7 +22,7 @@ namespace GDAI.Bridge.Editor.LayerA
         public List<TypeDisposition> type_dispositions;
         [Serializable] public sealed class TypeDisposition { public string type,source_path,disposition,rationale; }
         [Serializable] public sealed class FieldObligation { public string path,type; public bool required_reference,sensitive; }
-        [Serializable] public sealed class TypeObligation { public string type,source_path,kind,hosting; public bool @abstract,serializable; public List<string> bases; public List<FieldObligation> fields; }
+        [Serializable] public sealed class TypeObligation { public string type,source_path,kind,hosting; public bool @abstract,serializable; public List<string> bases,enum_members; public List<FieldObligation> fields; }
         [Serializable] public sealed class Source { public string path; public string sha256; }
         [Serializable] public sealed class Host
         {
@@ -42,7 +42,12 @@ namespace GDAI.Bridge.Editor.LayerA
             // declared JSON null while an actually omitted value remains absent on round-trip.
             public bool ShouldSerializevalue() => value!=null||_valueSpecified&&disposition!="preserve_external";
         }
-        public static bool SensitiveField(string name) => System.Text.RegularExpressions.Regex.IsMatch(name??"","secret|password|encryption|token|credential|(?:^|_)key$|(?:^|_)iv$",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        private static readonly HashSet<string> SensitiveWords=new HashSet<string>(new[]{"secret","password","encryption","token","credential","key","iv"},StringComparer.Ordinal);
+        public static bool SensitiveField(string name) {
+            var separated=System.Text.RegularExpressions.Regex.Replace(name??"","([a-z0-9])([A-Z])","$1_$2");
+            separated=System.Text.RegularExpressions.Regex.Replace(separated,"([A-Z]+)([A-Z][a-z])","$1_$2");
+            return System.Text.RegularExpressions.Regex.Split(separated,"[^A-Za-z0-9]+").Where(word=>word.Length>0).Select(word=>word.ToLowerInvariant()).Any(SensitiveWords.Contains);
+        }
         public static void RequireSafeFields(IEnumerable<Field> fields,int revision=1) {
             foreach(var field in fields??Enumerable.Empty<Field>()) {
                 if(SensitiveField(field.path)) {
@@ -161,6 +166,7 @@ namespace GDAI.Bridge.Editor.LayerA
             var obligationPaths=new HashSet<string>(obligations.Select(t=>t.source_path),StringComparer.Ordinal);
             foreach(var path in obligationPaths)if(!inventoryPaths.Contains(path))e.Add("obligation source identity missing: "+path);
             foreach(var t in obligations) {
+                if(p.revision==2&&t.kind=="enum"&&(t.enum_members==null||t.enum_members.Count!=t.enum_members.Distinct(StringComparer.Ordinal).Count()||t.enum_members.Any(member=>!System.Text.RegularExpressions.Regex.IsMatch(member??"","^[A-Za-z_]\\w*$"))))e.Add("exact enum member inventory required: "+t.type);
                 foreach(var field in t.fields??new List<FieldObligation>())if(p.revision==1&&IsStringShape(field.type))e.Add("string baseline configuration unsupported: "+t.type+"."+field.path);
                 var disposition=p.type_dispositions.Where(d=>d.type==t.type&&d.source_path==t.source_path).ToList();
                 string expected=t.@abstract?"abstract":t.hosting!="none"?"hosted":t.kind=="interface"?"interface":t.kind=="enum"?"enum":t.kind=="struct"||p.revision==2&&t.serializable&&(t.fields?.Count??0)>0?"data":"controller_constructed";
@@ -173,7 +179,7 @@ namespace GDAI.Bridge.Editor.LayerA
                     foreach(var field in t.fields??new List<FieldObligation>()) {
                         var f=h.comp.fields.SingleOrDefault(pf=>pf.path==field.path);
                         if(field.sensitive) {if(p.revision!=2||f?.disposition!="preserve_external")e.Add("sensitive serialized field requires opaque preservation: "+t.type+"."+field.path);continue;}
-                        if(f!=null)e.AddRange(ReconcileSerialized(field.type,t,f.disposition=="reference"?JToken.FromObject(f):f.value,obligations,f.disposition,t.type+"."+field.path,new HashSet<string>()));
+                        if(f!=null)e.AddRange(ReconcileSerialized(field.type,t,f.disposition=="reference"?JToken.FromObject(f):f.value,obligations,f.disposition,t.type+"."+field.path,p.revision,new HashSet<string>()));
                         if(p.revision==1&&field.type=="string"&&f?.value?.Type==JTokenType.String&&(string)f.value=="")e.Add("empty configuration unsupported: "+t.type+"."+field.path);
                     }
                 }
@@ -199,18 +205,43 @@ namespace GDAI.Bridge.Editor.LayerA
             var inner=Element(type);if(inner!=null)return Required(inner,owner,all,seen);var t=FieldType(type,owner,all);if(ObjectType(type,t))return true;
             if(t==null||seen.Contains(t.type))return false;var next=new HashSet<string>(seen){t.type};return t.fields.Any(f=>Required(f.type,t,all,next));
         }
-        private static List<string> ReconcileSerialized(string type,TypeObligation owner,JToken value,List<TypeObligation> all,string disposition,string path,HashSet<string> seen) {
+        private static bool Numeric(JToken value,out double number) {
+            number=0;if(value==null||value.Type!=JTokenType.Integer&&value.Type!=JTokenType.Float)return false;
+            try {number=(double)value;return !double.IsNaN(number)&&!double.IsInfinity(number);}catch{return false;}
+        }
+        private static bool SingleValue(JToken value) {
+            if(!Numeric(value,out var number))return false;var magnitude=Math.Abs(number);
+            return magnitude<=(double)float.MaxValue&&(number==0||magnitude>=(double)float.Epsilon)&&!float.IsNaN((float)number)&&!float.IsInfinity((float)number)&&(number==0||(float)number!=0);
+        }
+        private static List<string> ReconcileDeclaredLeaf(string type,JToken value,TypeObligation target,string path) {
+            var e=new List<string>();var normalized=(type??"").Replace("global::","").Replace(" ","");
+            if(new[]{"float","System.Single","Single"}.Contains(normalized)&&!SingleValue(value))e.Add("declared Single value wrong shape/range: "+path);
+            else if(new[]{"double","System.Double","Double"}.Contains(normalized)&&!Numeric(value,out _))e.Add("declared Double value wrong shape/range: "+path);
+            else {
+                var vector=System.Text.RegularExpressions.Regex.Match(normalized,@"^(?:UnityEngine\.)?Vector([234])$");
+                if(vector.Success) {var names=new[]{"x","y","z","w"}.Take(int.Parse(vector.Groups[1].Value)).ToArray();var o=value as JObject;if(o==null||o.Count!=names.Length||!new HashSet<string>(names).SetEquals(o.Properties().Select(property=>property.Name))||names.Any(name=>!SingleValue(o[name])))e.Add("declared vector value wrong shape/range: "+path);}
+                else if(System.Text.RegularExpressions.Regex.IsMatch(normalized,@"^(?:UnityEngine\.)?LayerMask$")) {var layers=value as JArray;if(layers==null||layers.Count>32||layers.Any(layer=>layer.Type!=JTokenType.String||((string)layer).Length==0||((string)layer).Length>64)||layers.Select(layer=>(string)layer).Distinct(StringComparer.Ordinal).Count()!=layers.Count)e.Add("declared LayerMask named-layer list wrong shape: "+path);}
+                else if(System.Text.RegularExpressions.Regex.IsMatch(normalized,@"^(?:UnityEngine\.)?AnimationCurve$")) {
+                    var curve=value as JObject;var keys=curve?["keys"] as JArray;var keyNames=new[]{"time","value","in_tangent","out_tangent","in_weight","out_weight","weighted_mode"};var numberNames=keyNames.Take(6).ToArray();
+                    bool valid=curve!=null&&new HashSet<string>(new[]{"keys","pre_wrap_mode","post_wrap_mode"}).SetEquals(curve.Properties().Select(property=>property.Name))&&keys!=null&&keys.Count>0&&keys.Count<=256&&keys.All(item=>item is JObject key&&new HashSet<string>(keyNames).SetEquals(key.Properties().Select(property=>property.Name))&&numberNames.All(name=>SingleValue(key[name]))&&new[]{"None","In","Out","Both"}.Contains((string)key["weighted_mode"]))&&new[]{"Default","Once","Loop","PingPong","ClampForever","Clamp"}.Contains((string)curve["pre_wrap_mode"])&&new[]{"Default","Once","Loop","PingPong","ClampForever","Clamp"}.Contains((string)curve["post_wrap_mode"]);
+                    if(!valid)e.Add("declared AnimationCurve value wrong shape: "+path);
+                } else if(target?.kind=="enum"&&(value?.Type!=JTokenType.String||target.enum_members==null||!target.enum_members.Contains((string)value,StringComparer.Ordinal)))e.Add("declared enum member unknown: "+path);
+            }
+            return e;
+        }
+        private static List<string> ReconcileSerialized(string type,TypeObligation owner,JToken value,List<TypeObligation> all,string disposition,string path,int revision,HashSet<string> seen) {
             var e=new List<string>();bool required=Required(type,owner,all,new HashSet<string>());
             if(required&&disposition!="reference"&&disposition!="value")return new List<string>{"required nested reference cannot be default/optional: "+path};
             var inner=Element(type);if(inner!=null) {
                 if(!(value is JArray ar)||required&&ar.Count==0)return new List<string>{"required serialized collection omitted/wrong shape: "+path};
-                for(int i=0;i<ar.Count;i++)e.AddRange(ReconcileSerialized(inner,owner,ar[i],all,"value",path+"["+i+"]",seen));return e;
+                for(int i=0;i<ar.Count;i++)e.AddRange(ReconcileSerialized(inner,owner,ar[i],all,"value",path+"["+i+"]",revision,seen));return e;
             }
             var t=FieldType(type,owner,all);if(ObjectType(type,t))return HasReference(value)?e:new List<string>{"required reference/config omitted: "+path};
+            if(revision==2)e.AddRange(ReconcileDeclaredLeaf(type,value,t,path));
             if(t==null||t.kind=="enum")return e;if(seen.Contains(t.type))return new List<string>{"recursive serialized configuration unsupported: "+path};
             if(!(value is JObject data))return new List<string>{"nested configuration omitted/wrong shape: "+path};
             if(data.Count!=t.fields.Count||t.fields.Any(f=>data[f.path]==null))e.Add("complete nested configuration required: "+path);
-            var next=new HashSet<string>(seen){t.type};foreach(var f in t.fields){if(SensitiveField(f.path)){e.Add("sensitive nested configuration unsupported");continue;}e.AddRange(ReconcileSerialized(f.type,t,data[f.path],all,disposition,path+"."+f.path,next));}return e;
+            var next=new HashSet<string>(seen){t.type};foreach(var f in t.fields){if(SensitiveField(f.path)){e.Add("sensitive nested configuration unsupported");continue;}e.AddRange(ReconcileSerialized(f.type,t,data[f.path],all,disposition,path+"."+f.path,revision,next));}return e;
         }
         private static bool HasReference(JToken v) => v is JArray a ? a.Count>0&&a.All(HasReference) : v is JObject o&&o["reference_kind"]!=null&&o["target_id"]!=null;
         private static bool BoundedValue(JToken t,int depth=0)
@@ -234,6 +265,10 @@ namespace GDAI.Bridge.Editor.LayerA
             var actual=type.IsInterface?"interface":type.IsEnum?"enum":type.IsValueType?"struct":type.IsClass&&!typeof(Delegate).IsAssignableFrom(type)?"class":"unsupported";
             return actual==kind&&(kind=="class"?type.IsAbstract==abstractClass:!abstractClass);
         }
+        public static bool CompiledEnumMembersMatch(Type type,IEnumerable<string> declared) {
+            if(type==null||!type.IsEnum||declared==null)return false;var members=declared.ToList();
+            return members.Count==members.Distinct(StringComparer.Ordinal).Count()&&new HashSet<string>(members,StringComparer.Ordinal).SetEquals(Enum.GetNames(type));
+        }
         public static Readiness AssessReadiness(GdaiPlayableContract c,out string error)
         {
             error=null;
@@ -250,6 +285,7 @@ namespace GDAI.Bridge.Editor.LayerA
                     if(t==null){error="settled compiled FQTN unavailable: "+obligation.type;return Readiness.Terminal;}
                     bool hosted=typeof(MonoBehaviour).IsAssignableFrom(t)||typeof(ScriptableObject).IsAssignableFrom(t);
                     if(!CompiledDeclarationMatches(t,obligation.kind,obligation.@abstract) || hosted!=(obligation.hosting!="none")){error="settled compiled type obligation mismatch: "+obligation.type;return Readiness.Terminal;}
+                    if(c.source_bound_plan.revision==2&&obligation.kind=="enum"&&!CompiledEnumMembersMatch(t,obligation.enum_members)){error="settled compiled enum member inventory mismatch: "+obligation.type;return Readiness.Terminal;}
                     if(hosted) {
                         var script=AssetDatabase.LoadAssetAtPath<MonoScript>(obligation.source_path);
                         if(script==null||script.GetClass()!=t){error="source script does not persist hosted type: "+obligation.type+" at "+obligation.source_path;return Readiness.Terminal;}
