@@ -26,6 +26,10 @@ namespace GDAI.Bridge.Editor.LayerA
         public const string OwnedPrefix = "Assets/GDAI_Project/Generated/";
         public const string BundleFileName = "GDAI_PlayableContract.json";
 
+        public GdaiSourceBoundPlayablePlan source_bound_plan;
+        public Newtonsoft.Json.Linq.JObject source_bound_context;
+        public string source_bound_context_json;
+        public List<GdaiSourceBoundPlayablePlan.TypeObligation> source_bound_obligations;
         public string schema_version;
         public int contract_revision;
         public string profile_id;
@@ -108,7 +112,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 return r;
             }
             if (c == null) { r.Errors.Add("contract json null"); return r; }
-            Validate(c, r.Errors);
+            try { Validate(c, r.Errors); } catch (Exception e) {r.Errors.Add("contract validation malformed: "+e.Message);}
             if (r.Errors.Count == 0) r.Contract = c;
             return r;
         }
@@ -141,6 +145,7 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             void Req(bool ok, string msg) { if (!ok) e.Add(msg); }
 
+            if(c.profile_id == GdaiSourceBoundPlayablePlan.Profile) {e.AddRange(GdaiSourceBoundPlayablePlan.Validate(c));return;}
             Req(c.schema_version == Schema, "bad schema_version: " + c.schema_version);
             Req(c.contract_revision == Revision, "bad contract_revision (expected " + Revision + "): " + c.contract_revision);
             Req(c.profile_id == Profile, "bad profile_id: " + c.profile_id);

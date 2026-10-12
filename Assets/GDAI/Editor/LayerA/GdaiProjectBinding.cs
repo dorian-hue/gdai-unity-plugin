@@ -30,6 +30,7 @@ namespace GDAI.Bridge.Editor.LayerA
         public string target_engine;
         public string unity_version;
         public string render_pipeline;
+        public string template_profile_id;
         public string plugin_version;
         public string template_revision;
         public string template_tree;
@@ -49,6 +50,8 @@ namespace GDAI.Bridge.Editor.LayerA
         public const string ExpectedSchema = "gdai.unity_export.v1";
         public const string ExpectedEngine = "unity";
         public const string ExpectedPipeline = "built_in";
+        public const string ExpectedSourceBoundPipeline = "urp_2d";
+        public const string ExpectedSourceBoundTemplateProfile = "unity.source_bound_demo.v1";
         public static readonly string[] ApprovedGeneratedRoots = { "Assets/GDAI_Generated" };
 
         public static string DefaultProjectRoot() =>
@@ -98,8 +101,23 @@ namespace GDAI.Bridge.Editor.LayerA
                 return "BINDING_WRONG_ENGINE: " + b.target_engine;
             if (!string.IsNullOrEmpty(expectedUnityVersion) && b.unity_version != expectedUnityVersion)
                 return "BINDING_WRONG_UNITY_VERSION: " + b.unity_version;
-            if (b.render_pipeline != ExpectedPipeline)
-                return "BINDING_WRONG_PIPELINE: " + b.render_pipeline;
+            if (string.IsNullOrEmpty(b.template_profile_id))
+            {
+                if (b.render_pipeline != ExpectedPipeline)
+                    return b.render_pipeline == ExpectedSourceBoundPipeline
+                        ? "BINDING_TEMPLATE_PROFILE_REQUIRED: " + b.render_pipeline
+                        : "BINDING_WRONG_PIPELINE: " + b.render_pipeline;
+            }
+            else
+            {
+                if (b.template_profile_id != ExpectedSourceBoundTemplateProfile)
+                    return "BINDING_UNKNOWN_TEMPLATE_PROFILE: " + b.template_profile_id;
+                if (b.render_pipeline != ExpectedSourceBoundPipeline)
+                    return "BINDING_TEMPLATE_PROFILE_PIPELINE_MISMATCH: " + b.render_pipeline;
+                if (!Guid.TryParse(b.code_bundle_snapshot_id, out var snapshotGuid) ||
+                    snapshotGuid == Guid.Empty)
+                    return "BINDING_BAD_CODE_BUNDLE_SNAPSHOT_UUID";
+            }
             if (NormalizeVersion(b.plugin_version) != NormalizeVersion(expectedPluginVersion))
                 return "BINDING_PLUGIN_VERSION_MISMATCH: " + b.plugin_version;
 

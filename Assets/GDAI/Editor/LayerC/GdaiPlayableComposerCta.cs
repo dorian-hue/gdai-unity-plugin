@@ -49,7 +49,37 @@ namespace GDAI.Bridge.Editor.LayerC
         private static string PendingComposePath(string root) => Path.Combine(root, "Library", "GDAI", "pending-compose.json");
 
         private const string ProbeType = "CharacterStateMachine"; // a generated player-assembly MonoBehaviour
-        private static bool GeneratedTypesCompiled() => GdaiSceneObjectComposer.ResolveComponentType(ProbeType) != null;
+        private static GdaiSourceBoundPlayablePlan.Readiness GeneratedReadiness(out string error)
+        {
+            error=null;var path=Path.Combine(Root(), "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
+            if(File.Exists(path)) {
+                var parsed=GdaiPlayableContract.Parse(File.ReadAllText(path));
+                if(!parsed.Ok){error=parsed.Summary;return GdaiSourceBoundPlayablePlan.Readiness.Terminal;}
+                if(parsed.Contract.profile_id==GdaiSourceBoundPlayablePlan.Profile) {
+                    var readiness=GdaiSourceBoundPlayablePlan.AssessReadiness(parsed.Contract,out error);
+                    if(readiness!=GdaiSourceBoundPlayablePlan.Readiness.Ready)return readiness;
+                    try {
+                        GdaiSourceBoundPlayableComposer.AdmitTransientComposition(parsed.Contract);
+                    }catch(Exception ex){error="compiled source admission: "+ex.Message;return GdaiSourceBoundPlayablePlan.Readiness.Terminal;}
+                    return GdaiSourceBoundPlayablePlan.Readiness.Ready;
+                }
+            }
+            return GdaiSceneObjectComposer.ResolveComponentType(ProbeType)!=null?GdaiSourceBoundPlayablePlan.Readiness.Ready:GdaiSourceBoundPlayablePlan.Readiness.Transient;
+        }
+        public static GdaiSourceBoundPlayablePlan.Readiness InspectImportedContractReadiness(out bool present,out string error)
+        {
+            present=File.Exists(Path.Combine(Root(),"Assets","GDAI_Generated",GdaiPlayableContract.BundleFileName));
+            return present?GeneratedReadiness(out error):NoImportedContract(out error);
+        }
+        private static GdaiSourceBoundPlayablePlan.Readiness NoImportedContract(out string error) {error=null;return GdaiSourceBoundPlayablePlan.Readiness.Ready;}
+        private static ImportedContractOutcome TerminalFailure(string root,string project,string snapshot,string scene,DateTime now,string error,out Result result,out string detail)
+        {
+            ClearPendingCompose(root);GdaiSyncFinalization.Clear(root);
+            var path=Path.Combine(root,"Assets","GDAI_Generated",GdaiPlayableContract.BundleFileName);
+            var sha=File.Exists(path)?GdaiPlayableResume.Sha256Hex(File.ReadAllBytes(path)):null;
+            var op=GdaiPlayableOperation.Create(root,project,snapshot,GdaiPlayableContract.Schema,4,sha,scene,now);op.Fail(root,now,error);
+            result=new Result {Error=error,OperationId=op.operation_id};detail="terminal generated identity failure: "+error;return ImportedContractOutcome.Failed;
+        }
 
         /// <summary>
         /// B-1: true when RunOrDeferFromImportedContract would defer — the imported bundle
@@ -60,8 +90,8 @@ namespace GDAI.Bridge.Editor.LayerC
         /// </summary>
         public static bool WouldDeferFromImportedContract()
         {
-            string cpath = Path.Combine(Root(), "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
-            return File.Exists(cpath) && !GeneratedTypesCompiled();
+            var readiness=InspectImportedContractReadiness(out var present,out _);
+            return present&&readiness==GdaiSourceBoundPlayablePlan.Readiness.Transient;
         }
 
         /// <summary>
@@ -79,7 +109,9 @@ namespace GDAI.Bridge.Editor.LayerC
             string cpath = Path.Combine(root, "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
             if (!File.Exists(cpath)) { ClearPendingCompose(root); detail = "no playable contract in bundle (pre-rev4 snapshot)"; return ImportedContractOutcome.NotPresent; }
 
-            if (!GeneratedTypesCompiled())
+            var readiness=GeneratedReadiness(out var readinessError);
+            if(readiness==GdaiSourceBoundPlayablePlan.Readiness.Terminal)return TerminalFailure(root,projectId,snapshotId,scenePath,nowUtc,readinessError,out result,out detail);
+            if (readiness==GdaiSourceBoundPlayablePlan.Readiness.Transient)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(PendingComposePath(root)));
                 File.WriteAllText(PendingComposePath(root), JsonConvert.SerializeObject(
@@ -91,6 +123,44 @@ namespace GDAI.Bridge.Editor.LayerC
             var outcome = RunFromImportedContract(projectId, snapshotId, scenePath, nowUtc, out result, out detail);
             ClearPendingCompose(root);
             return outcome;
+        }
+
+        /// <summary>
+        /// The shared post-import normal route for the source-bound profile. Both the visible
+        /// Complete Sync window and the domain-reload resume hook call this before any legacy
+        /// canonical-scene or Layer-B mutation. False means the imported contract is an ordinary
+        /// legacy profile and the caller must retain its existing route unchanged.
+        /// </summary>
+        public static bool TryRunSourceBoundNormalRoute(string projectId,string snapshotId,string scenePath,
+            DateTime nowUtc,out ImportedContractOutcome outcome,out Result result,out string detail)
+        {
+            outcome=ImportedContractOutcome.NotPresent;result=null;detail=null;
+            var path=Path.Combine(Root(),"Assets","GDAI_Generated",GdaiPlayableContract.BundleFileName);
+            if(!File.Exists(path))return false;
+            var parsed=GdaiPlayableContract.Parse(File.ReadAllText(path));
+            // A contract that changed or became malformed after the caller's admission may
+            // never fall through into scene-mutating legacy behavior.
+            if(!parsed.Ok) {outcome=RunOrDeferFromImportedContract(projectId,snapshotId,scenePath,nowUtc,out result,out detail);return true;}
+            if(parsed.Contract.profile_id!=GdaiSourceBoundPlayablePlan.Profile)return false;
+            outcome=RunOrDeferFromImportedContract(projectId,snapshotId,scenePath,nowUtc,out result,out detail);
+            return true;
+        }
+
+        /// <summary>Source-bound completion saves only the owned active canonical scene.
+        /// Loaded dirty or never-saved user scenes remain in memory and are never sent through
+        /// SaveOpenScenes. Legacy finalization keeps its existing behavior.</summary>
+        public static GdaiSyncFinalization.FinalizeResult FinalizeSourceBoundNormalRoute(string projectRoot,GdaiSyncFinalizationContext ctx,DateTime nowUtc)
+        {
+            var r=new GdaiSyncFinalization.FinalizeResult();
+            if(ctx==null){r.FailPhase="FINALIZE_CONTEXT_MISSING";return r;}
+            try {
+                AssetDatabase.SaveAssets();var active=SceneManager.GetActiveScene();
+                if(!active.IsValid()||string.IsNullOrEmpty(active.path)||!EditorSceneManager.SaveScene(active)){r.FailPhase="SCENE_SAVE";return r;}
+                int elementCount=0,colliderCount=0;foreach(var col in UnityEngine.Object.FindObjectsByType<PolygonCollider2D>(FindObjectsSortMode.None)){colliderCount++;_=col;}
+                var sceneRoot=GameObject.Find("GDAI_SceneAssembly");if(sceneRoot!=null)elementCount=sceneRoot.transform.childCount;
+                var receipt=new GdaiExportReceiptData {project_id=ctx.project_id,snapshot_id=ctx.snapshot_id,snapshot_revision=ctx.snapshot_revision,plugin_version=ctx.plugin_version,generated_file_count=ctx.generated_file_count,binary_asset_count=ctx.binary_asset_count,preserved_meta_count=ctx.preserved_meta_count,backup_path=ctx.backup_path,scene_path=active.path,scene_elements_count=elementCount,collider_count=colliderCount,started_at=ctx.started_at,completed_at=nowUtc.ToString("o"),result="PASS"};
+                r.ReceiptPath=GdaiExportReceipt.Write(projectRoot,receipt,nowUtc);r.SceneElementsCount=elementCount;r.ColliderCount=colliderCount;r.Ok=true;return r;
+            }catch(Exception e){r.FailPhase="FINALIZE_EXCEPTION: "+e.Message;return r;}
         }
 
         /// <summary>
@@ -108,50 +178,45 @@ namespace GDAI.Bridge.Editor.LayerC
             try { pc = JsonConvert.DeserializeObject<PendingCompose>(File.ReadAllText(pp)); }
             catch { ClearPendingCompose(root); return false; }
             if (pc == null || string.IsNullOrEmpty(pc.project_id)) { ClearPendingCompose(root); return false; }
-            if (!GeneratedTypesCompiled()) { detail = "generated code not compiled yet — will retry on the next reload"; return false; }
+            var readiness=GeneratedReadiness(out var readinessError);
+            if(readiness==GdaiSourceBoundPlayablePlan.Readiness.Terminal){outcome=TerminalFailure(root,pc.project_id,pc.snapshot_id,pc.scene_path,nowUtc,readinessError,out result,out detail);return true;}
+            if(readiness==GdaiSourceBoundPlayablePlan.Readiness.Transient) {detail=readinessError??"generated code not compiled yet";return false;}
             ClearPendingCompose(root); // run once
-
-            // B-1 (MNT-10): the deferred first sync lost every pre-reload scene mutation —
-            // the reload discards unsaved scenes. The resume therefore owns the WHOLE scene
-            // sequence: open the canonical scene, run the Layer-B seams into it, compose,
-            // then run the single shared finalization from the context the window persisted
-            // before the reload. Order matches the proven inline route (D1 sync2).
             string scenePath = string.IsNullOrEmpty(pc.scene_path) ? "Assets/Scenes/Main.unity" : pc.scene_path;
-            var canonical = GdaiCanonicalScene.EnsureSavedAndInBuild(scenePath);
-            if (!canonical.Ok)
+            // Source-bound composition owns its complete additive scene/asset lifecycle. It must
+            // run before the legacy canonical and Layer-B path so its admission and rollback see
+            // the real pre-sync state. Ordinary contracts retain the established legacy ordering.
+            var sourceBoundHandled=TryRunSourceBoundNormalRoute(pc.project_id,pc.snapshot_id,scenePath,nowUtc,out outcome,out result,out detail);
+            if(!sourceBoundHandled)
             {
-                GdaiSyncFinalization.Clear(root); // never finalize a failed resume
-                outcome = ImportedContractOutcome.Failed;
-                detail = "canonical scene: " + canonical.Error;
-                return true;
+                var canonical = GdaiCanonicalScene.EnsureSavedAndInBuild(scenePath);
+                if (!canonical.Ok)
+                {
+                    GdaiSyncFinalization.Clear(root); // never finalize a failed resume
+                    outcome = ImportedContractOutcome.Failed;
+                    detail = "canonical scene: " + canonical.Error;
+                    return true;
+                }
+                try
+                {
+                    GdaiSceneBackgroundBinder.TryPlaceFromPointer(out string bgMsg);
+                    Debug.Log("[GDAI][ResumeCompose] scene background: " + bgMsg);
+                    GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
+                    var spawn = GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
+                    Debug.Log("[GDAI][ResumeCompose] spawn markers: " + spawn);
+                    GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
+                    GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
+                    GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
+                }
+                catch (Exception e)
+                {
+                    GdaiSyncFinalization.Clear(root);
+                    outcome = ImportedContractOutcome.Failed;
+                    detail = "layer-b seams: " + e.Message;
+                    return true;
+                }
+                outcome = RunFromImportedContract(pc.project_id, pc.snapshot_id, scenePath, nowUtc, out result, out detail);
             }
-            try
-            {
-                // B-1 amendment (hot-regression finding): the scene background is placed
-                // by the IMPORT chain (UNITY-SCENE-BG-BIND-1) against the pre-reload
-                // scene, which this fresh-sync reload discarded — the one scene mutation
-                // outside the five seams. Re-place it from the persisted pointer into
-                // the now-open canonical scene (idempotent; no-op when the bundle
-                // carried no background).
-                GdaiSceneBackgroundBinder.TryPlaceFromPointer(out string bgMsg);
-                Debug.Log("[GDAI][ResumeCompose] scene background: " + bgMsg);
-
-                GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
-                var spawn = GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
-                Debug.Log("[GDAI][ResumeCompose] spawn markers: " + spawn);
-                GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
-                GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
-                GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
-            }
-            catch (Exception e)
-            {
-                GdaiSyncFinalization.Clear(root);
-                outcome = ImportedContractOutcome.Failed;
-                detail = "layer-b seams: " + e.Message;
-                return true;
-            }
-
-            outcome = RunFromImportedContract(pc.project_id, pc.snapshot_id, scenePath, nowUtc, out result, out detail);
 
             // B-1 finalization — exactly once, only after a composed scene, only with the
             // context persisted for THIS operation (TryTake is the read+delete latch and
@@ -160,7 +225,7 @@ namespace GDAI.Bridge.Editor.LayerC
             {
                 if (GdaiSyncFinalization.TryTake(root, pc.project_id, pc.snapshot_id, out var fctx))
                 {
-                    var fin = GdaiSyncFinalization.FinalizeSync(root, fctx, nowUtc);
+                    var fin = sourceBoundHandled?FinalizeSourceBoundNormalRoute(root,fctx,nowUtc):GdaiSyncFinalization.FinalizeSync(root, fctx, nowUtc);
                     if (fin.Ok)
                     {
                         detail = detail + " · finalized: " + fin.SceneElementsCount + " scene element(s), receipt " + Path.GetFileName(fin.ReceiptPath);
@@ -176,7 +241,9 @@ namespace GDAI.Bridge.Editor.LayerC
                     // No valid persisted context (pre-B-1 defer, or consumed already). Fail
                     // closed on the receipt — never invent import stats — but keep the scene:
                     // save what the composer built so the objects survive the next reload.
-                    UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
+                    if(sourceBoundHandled) {
+                        var active=SceneManager.GetActiveScene();if(active.IsValid()&&!string.IsNullOrEmpty(active.path))EditorSceneManager.SaveScene(active);
+                    } else UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
                     Debug.LogWarning("[GDAI][ResumeCompose] no pending finalization context — scene saved, no completion receipt written");
                 }
             }
@@ -225,6 +292,8 @@ namespace GDAI.Bridge.Editor.LayerC
             var res = new Result();
             if (c == null) { res.Error = "null contract"; return res; }
             string root = Root();
+            if(c.profile_id==GdaiSourceBoundPlayablePlan.Profile)
+                return GdaiSourceBoundPlayableComposer.Run(c,projectId,snapshotId,contractSha256,scenePath,nowUtc);
 
             var op = GdaiPlayableOperation.Create(root, projectId, snapshotId,
                 c.schema_version, c.contract_revision, contractSha256, scenePath, nowUtc);

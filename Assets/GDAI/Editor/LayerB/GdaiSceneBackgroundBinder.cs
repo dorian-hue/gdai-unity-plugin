@@ -110,7 +110,7 @@ namespace GDAI.Bridge.Editor.LayerB
                     "Assets", "GDAI_Generated", GdaiPlayableContract.BundleFileName);
                 if (!File.Exists(path)) return null;
                 var parse = GdaiPlayableContract.Parse(File.ReadAllText(path));
-                return parse.Ok ? parse.Contract.camera : null;
+                return parse.Ok ? (parse.Contract.profile_id==GdaiSourceBoundPlayablePlan.Profile?GdaiSourceBoundPlayablePlan.Framing(parse.Contract):parse.Contract.camera) : null;
             }
             catch { return null; }
         }

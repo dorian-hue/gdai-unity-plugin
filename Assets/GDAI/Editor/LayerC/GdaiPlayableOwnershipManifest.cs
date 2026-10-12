@@ -17,6 +17,7 @@ using System.Linq;
 using GDAI.Bridge.Editor.LayerA;
 using GDAI.Runtime;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -37,6 +38,8 @@ namespace GDAI.Bridge.Editor.LayerC
         public int contract_revision;
         public string contract_sha256;
         public string generated_at;
+        public int source_bound_baseline_revision;
+        public List<GdaiSourceBoundFieldBaseline> source_bound_field_baselines;
         public GdaiOwnedAssetRecord input_asset;
         public GdaiOwnedAssetRecord enemy_prefab;
         public GdaiOwnedAssetRecord canonical_scene;
@@ -49,6 +52,7 @@ namespace GDAI.Bridge.Editor.LayerC
         public const string SchemaVersion = "gdai.unity.playable_assets.v1";
     }
 
+    [Serializable] public class GdaiSourceBoundFieldBaseline { public string host_id,component_id,source_path,type,field,policy; [JsonProperty(NullValueHandling = NullValueHandling.Ignore)] public JToken state; }
     public static class GdaiPlayableOwnershipManifest
     {
         // Under the owned generated root so the coherent clean-replace regenerates it.
@@ -116,6 +120,47 @@ namespace GDAI.Bridge.Editor.LayerC
                 return true;
             }
             catch (Exception e) { error = "manifest write failed: " + e.Message; return false; }
+        }
+
+        public static bool WriteSourceBound(GdaiPlayableContract c,string project,string snapshot,string sha,string scene,out string error)
+        {
+            error=null;
+            try {
+                var m=new GdaiPlayableAssetsManifest {schema_version=GdaiPlayableAssetsManifest.SchemaVersion,project_id=project,profile_id=c.profile_id,snapshot_id=snapshot,contract_revision=c.contract_revision,contract_sha256=sha,generated_at=DateTime.UtcNow.ToString("o"),canonical_scene=AssetRecord("canonical_scene",scene)};
+                // Preserve the previous receipt baseline until the saved/reopened result passes.
+                var previous=Load();if(previous!=null&&previous.project_id==project&&previous.profile_id==c.profile_id){m.source_bound_baseline_revision=previous.source_bound_baseline_revision;m.source_bound_field_baselines=previous.source_bound_field_baselines;}
+                m.assets.Add(m.canonical_scene);
+                foreach(var host in c.source_bound_plan.objects) {
+                    if(host.kind=="scene")m.owned_scene_objects.Add(new GdaiOwnedObjectRecord {name=host.name,role=host.id,profile_id=c.profile_id,snapshot_id=snapshot});
+                    else m.assets.Add(AssetRecord(host.kind,host.asset_path));
+                }
+                EnsureFolder(Path.GetDirectoryName(ManifestPath).Replace('\\','/'));
+                var abs=AbsPath(ManifestPath);File.WriteAllText(abs+".tmp",JsonConvert.SerializeObject(m,Formatting.Indented));
+                if(File.Exists(abs))File.Replace(abs+".tmp",abs,null);else File.Move(abs+".tmp",abs);
+                AssetDatabase.ImportAsset(ManifestPath);return true;
+            }catch(Exception ex){error="source-bound ownership write: "+ex.Message;return false;}
+        }
+        public static void CommitSourceBoundBaseline(GdaiPlayableContract c)
+        {
+            // Caller has just independently reopened and verified the saved scene and every asset.
+            var m=Load()??throw new InvalidOperationException("ownership baseline manifest absent");
+            var baselines=GdaiSourceBoundPlayableComposer.CaptureSavedBaselines(c);
+            m.source_bound_baseline_revision=c.source_bound_plan.revision;m.source_bound_field_baselines=baselines;
+            var abs=AbsPath(ManifestPath);File.WriteAllText(abs+".tmp",JsonConvert.SerializeObject(m,Formatting.Indented));File.Replace(abs+".tmp",abs,null);AssetDatabase.ImportAsset(ManifestPath);
+        }
+        public static bool VerifySourceBound(GdaiPlayableContract c,string project,string snapshot,string sha,out string error)
+        {
+            error=null;var m=Load();
+            if(m==null||m.schema_version!=GdaiPlayableAssetsManifest.SchemaVersion||m.project_id!=project||m.snapshot_id!=snapshot||m.profile_id!=c.profile_id||m.contract_revision!=c.contract_revision||m.contract_sha256!=sha){error="source-bound ownership identity mismatch";return false;}
+            var expected=c.source_bound_plan.objects.Where(o=>o.kind!="scene").Select(o=>o.asset_path).Concat(new[]{c.canonical_scene.path}).ToArray();
+            if(m.assets.Count!=expected.Length||!new HashSet<string>(m.assets.Select(a=>a.path)).SetEquals(expected)){error="source-bound ownership asset set mismatch";return false;}
+            foreach(var asset in m.assets)if(string.IsNullOrEmpty(asset.guid)||AssetDatabase.AssetPathToGUID(asset.path)!=asset.guid){error="source-bound asset GUID mismatch";return false;}
+            var hosts=c.source_bound_plan.objects.Where(o=>o.kind=="scene").ToArray();
+            if(m.owned_scene_objects.Count!=hosts.Length||!new HashSet<string>(m.owned_scene_objects.Select(o=>o.role)).SetEquals(hosts.Select(o=>o.id))){error="source-bound ownership host set mismatch";return false;}
+            var markers=UnityEngine.Object.FindObjectsByType<GdaiGeneratedPlayableMarker>(FindObjectsInactive.Include,FindObjectsSortMode.None).Where(x=>x.gameObject.scene==UnityEngine.SceneManagement.SceneManager.GetActiveScene()&&x.profileId==c.profile_id).ToArray();
+            if(markers.Length!=hosts.Length){error="source-bound live ownership count mismatch";return false;}
+            foreach(var host in hosts)if(markers.Count(mk=>mk.gameObject.name==host.name&&mk.ownedRole==host.id&&mk.snapshotId==snapshot)!=1||m.owned_scene_objects.Count(o=>o.name==host.name&&o.role==host.id&&o.profile_id==c.profile_id&&o.snapshot_id==snapshot)!=1){error="source-bound host ownership mismatch";return false;}
+            return true;
         }
 
         public static GdaiPlayableAssetsManifest Load()

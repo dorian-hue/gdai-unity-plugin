@@ -1,8 +1,8 @@
 {
   "name": "ai.gamedevs.plugin",
-  "version": "0.1.0-alpha.8.10",
+  "version": "0.1.0-alpha.8.11",
   "displayName": "GDAI Plugin",
-  "description": "Official plugin for GameDevs.AI — realtime asset sync, architecture graph import, and code generation bridge.",
+  "description": "Official plugin for GameDevs.AI \u2014 realtime asset sync, architecture graph import, and code generation bridge.",
   "unity": "6000.4",
   "unityRelease": "1f1",
   "dependencies": {

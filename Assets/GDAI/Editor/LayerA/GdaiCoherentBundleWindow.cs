@@ -46,7 +46,7 @@ namespace GDAI.Bridge.Editor.LayerA
 
         // MVP-C · device pairing + scoped token + selectors
         private const string DefaultFunctionsBase = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1";
-        private const string PluginVersion = "0.1.0-alpha.8.10";
+        public const string PluginVersion = "0.1.0-alpha.8.11";
         private const string PrefFunctionsBase = "GDAI_MvpC_FunctionsBase";
         private const string PrefPluginToken = "GDAI_MvpC_PluginToken";   // scoped gdai_plugin_v1.* token
         private const string PrefSelProject = "GDAI_MvpC_SelectedProjectId";
@@ -773,7 +773,8 @@ namespace GDAI.Bridge.Editor.LayerA
 
         // Shared proxy fetch + validate + import core. `token` is either a scoped plugin token
         // (production) or a pasted user JWT (manual fallback) — both go out as Authorization: Bearer.
-        private async Task RunProxyFetch(string proxyUrl, string projectId, bool latest, string snapshotId, string token, bool import)
+        private async Task RunProxyFetch(string proxyUrl, string projectId, bool latest, string snapshotId, string token, bool import,
+            bool deferSceneBackgroundUntilSourceAdmission = false)
         {
             _busy = true; _fetched = null; _validation = null; _lastErrorDetail = "";
             SetStatus(BundleStatus.Fetched, "Fetching bundle via proxy...");
@@ -848,8 +849,21 @@ namespace GDAI.Bridge.Editor.LayerA
             {
                 try
                 {
-                    bool placed = GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder
-                        .PlaceFromBundle(dto.assets, dto.snapshot_id, out string bgMsg);
+                    bool placed = false;
+                    string bgMsg;
+                    if (deferSceneBackgroundUntilSourceAdmission)
+                    {
+                        // Persist only the reload/inline replay handle during Complete Sync.
+                        // The canonical-scene branches consume it after source admission; this
+                        // branch must never touch or dirty the currently open user scene.
+                        var background = GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.SelectSceneBackground(dto.assets);
+                        if (background == null) bgMsg = "no scene_background in bundle (nothing to place)";
+                        else if (GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.WritePointer(background, dto.snapshot_id, out string pointerError))
+                            bgMsg = "scene background replay deferred until source admission";
+                        else throw new InvalidOperationException(pointerError);
+                    }
+                    else placed = GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder
+                        .PlaceFromBundle(dto.assets, dto.snapshot_id, out bgMsg);
                     Debug.Log("[GDAI][Assets][SceneBackground] " + bgMsg);
                     if (placed) _statusLine += " Scene background placed.";
                 }
@@ -1113,19 +1127,20 @@ namespace GDAI.Bridge.Editor.LayerA
                 await RunCompleteFetchImport();
                 if (_status != BundleStatus.RefreshTriggered) { failPhase = "FETCH_IMPORT"; return; }
 
-                // B-1b (MNT-10): the canonical scene must be open BEFORE any scene work.
-                // The Layer-B seams used to run against whatever scene happened to be open
-                // (a fresh project's Untitled); the reload/compose then discarded them and
-                // the first sync silently lost the background and arena.
-                var canonical = GDAI.Bridge.Editor.LayerC.GdaiCanonicalScene.EnsureSavedAndInBuild("Assets/Scenes/Main.unity");
-                if (!canonical.Ok) { failPhase = "CANONICAL_SCENE: " + canonical.Error; return; }
-
-                // B-1 route decision BEFORE the seams: a deferred fresh sync must not touch
-                // the scene now — the imminent domain reload discards unsaved objects. The
-                // resume hook owns the whole scene sequence after the reload (canonical open
-                // → Layer-B seams → compose) and then runs the single shared finalization
-                // from the context persisted here.
-                if (GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.WouldDeferFromImportedContract())
+                // Source-bound admission runs before the canonical scene/build settings and
+                // every Layer-B seam. Terminal is not the same as ready; only a real import or
+                // compile wait may defer to the normal domain-reload recovery path.
+                var importedReadiness=InspectCompleteSyncSceneMutationAdmission(
+                    out bool importedContractPresent,out string importedAdmissionDetail);
+                if(importedContractPresent&&importedReadiness==GdaiSourceBoundPlayablePlan.Readiness.Terminal)
+                {
+                    var rejected=GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
+                        _binding.project_id,_sumSnapshot,"Assets/Scenes/Main.unity",DateTime.UtcNow,
+                        out _,out string rejectedDetail);
+                    failPhase="PLAYABLE_COMPOSE: "+rejected+" — "+(rejectedDetail??importedAdmissionDetail);
+                    return;
+                }
+                if(importedContractPresent&&importedReadiness==GdaiSourceBoundPlayablePlan.Readiness.Transient)
                 {
                     var deferred = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
                         _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
@@ -1143,39 +1158,35 @@ namespace GDAI.Bridge.Editor.LayerA
                     return;
                 }
 
-                // B-1 amendment (hot-regression finding): the import chain placed the
-                // scene background against the pre-canonical-open scene; re-place it
-                // from the persisted pointer now that the canonical scene is open
-                // (idempotent update — never duplicates; no-op without a background).
-                try
+                // The source-bound profile owns the complete additive scene/asset transaction and
+                // therefore enters here before canonical/Layer-B legacy effects. Ordinary profiles
+                // keep their established ordering and behavior.
+                var sourceBoundHandled=GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.TryRunSourceBoundNormalRoute(
+                    _binding.project_id,_sumSnapshot,"Assets/Scenes/Main.unity",DateTime.UtcNow,
+                    out var composed,out var playableResult,out string playableDetail);
+                if(!sourceBoundHandled)
                 {
-                    if (GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.TryPlaceFromPointer(out string bgReplayMsg))
-                        Debug.Log("[GDAI][CompleteSync] scene background: " + bgReplayMsg);
+                    var canonical = GDAI.Bridge.Editor.LayerC.GdaiCanonicalScene.EnsureSavedAndInBuild("Assets/Scenes/Main.unity");
+                    if (!canonical.Ok) { failPhase = "CANONICAL_SCENE: " + canonical.Error; return; }
+                    try
+                    {
+                        if (GDAI.Bridge.Editor.LayerB.GdaiSceneBackgroundBinder.TryPlaceFromPointer(out string bgReplayMsg))
+                            Debug.Log("[GDAI][CompleteSync] scene background: " + bgReplayMsg);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning("[GDAI][CompleteSync] scene background re-place skipped: " + e.Message);
+                    }
+                    GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
+                    var spawn = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
+                    Debug.Log("[GDAI][CompleteSync] spawn markers: " + spawn);
+                    GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
+                    GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
+                    GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
+                    composed = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
+                        _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
+                        out playableResult, out playableDetail);
                 }
-                catch (Exception e)
-                {
-                    Debug.LogWarning("[GDAI][CompleteSync] scene background re-place skipped: " + e.Message);
-                }
-
-                // 7-9: scene elements, spawn markers, arena bounds, demo
-                //      obstacle, edge blockers (existing Layer B seams) — now guaranteed
-                //      to land in the open canonical scene (B-1b).
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyElements.PlaceSceneElementsMenu();
-                var spawn = GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblySpawnMarkers.PlaceSpawnMarkers();
-                Debug.Log("[GDAI][CompleteSync] spawn markers: " + spawn);
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyArenaBounds.ShowArenaBoundsMenu();
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyDemoObstacle.CreateDemoObstacleMenu();
-                GDAI.Bridge.Editor.LayerB.GdaiSceneAssemblyEdgeBlockers.CreateEdgeBlockersMenu();
-
-                // 10: playable composition. AUTO-0Q: when the imported bundle carries the rev4
-                //     playable contract, the zero-manual composer OWNS scene construction (canonical
-                //     objects, input asset, enemy prefab, bindings, camera, AudioListener, save,
-                //     ownership manifest, hard receipt — operation Completed only on PASS). It must
-                //     run INSTEAD of the legacy minimal scene prep, whose unmarked objects the
-                //     composer would rightly refuse. Pre-rev4 snapshots keep the legacy path.
-                var composed = GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.RunOrDeferFromImportedContract(
-                    _binding.project_id, _sumSnapshot, "Assets/Scenes/Main.unity", DateTime.UtcNow,
-                    out var playableResult, out string playableDetail);
                 switch (composed)
                 {
                     case GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.ImportedContractOutcome.Composed:
@@ -1205,8 +1216,11 @@ namespace GDAI.Bridge.Editor.LayerA
                 // 11-13: single shared finalization (B-1) — save assets + open scene,
                 // measure the outcome, write the PASS receipt. The SAME function the
                 // deferred resume path runs; there is exactly one finalization definition.
-                var fin = GdaiSyncFinalization.FinalizeSync(
-                    GdaiProjectBinding.DefaultProjectRoot(), BuildFinalizationContext(startedUtc), DateTime.UtcNow);
+                var fin = sourceBoundHandled
+                    ? GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.FinalizeSourceBoundNormalRoute(
+                        GdaiProjectBinding.DefaultProjectRoot(),BuildFinalizationContext(startedUtc),DateTime.UtcNow)
+                    : GdaiSyncFinalization.FinalizeSync(
+                        GdaiProjectBinding.DefaultProjectRoot(), BuildFinalizationContext(startedUtc), DateTime.UtcNow);
                 if (!fin.Ok) { failPhase = fin.FailPhase; return; }
                 _bindingState = GdaiBindingState.SyncComplete;
                 SetStatus(BundleStatus.RefreshTriggered,
@@ -1229,6 +1243,14 @@ namespace GDAI.Bridge.Editor.LayerA
             }
         }
 
+        // Complete Sync imports code/assets before it can inspect the newly imported contract,
+        // but no scene mutation may cross this boundary first. This side-effect-free classifier
+        // is the actual Window admission used by both the inline and reload-deferral branches.
+        public static GdaiSourceBoundPlayablePlan.Readiness InspectCompleteSyncSceneMutationAdmission(
+            out bool importedContractPresent, out string detail) =>
+            GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.InspectImportedContractReadiness(
+                out importedContractPresent, out detail);
+
         private async Task RunCompleteFetchImport()
         {
             string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
@@ -1242,11 +1264,13 @@ namespace GDAI.Bridge.Editor.LayerA
             if (boundSnapshot.Length > 0)
             {
                 Debug.Log("[GDAI][CompleteSync] exact-snapshot fetch from binding: " + boundSnapshot);
-                await RunProxyFetch(proxyUrl, _selProjectId, latest: false, snapshotId: boundSnapshot, token: _pluginToken, import: true);
+                await RunProxyFetch(proxyUrl, _selProjectId, latest: false, snapshotId: boundSnapshot, token: _pluginToken,
+                    import: true, deferSceneBackgroundUntilSourceAdmission: true);
             }
             else
             {
-                await RunProxyFetch(proxyUrl, _selProjectId, latest: true, snapshotId: "", token: _pluginToken, import: true);
+                await RunProxyFetch(proxyUrl, _selProjectId, latest: true, snapshotId: "", token: _pluginToken,
+                    import: true, deferSceneBackgroundUntilSourceAdmission: true);
             }
         }
 
