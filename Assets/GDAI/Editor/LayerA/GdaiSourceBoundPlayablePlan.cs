@@ -166,7 +166,7 @@ namespace GDAI.Bridge.Editor.LayerA
             var obligationPaths=new HashSet<string>(obligations.Select(t=>t.source_path),StringComparer.Ordinal);
             foreach(var path in obligationPaths)if(!inventoryPaths.Contains(path))e.Add("obligation source identity missing: "+path);
             foreach(var t in obligations) {
-                if(p.revision==2&&t.kind=="enum"&&(t.enum_members==null||t.enum_members.Count!=t.enum_members.Distinct(StringComparer.Ordinal).Count()||t.enum_members.Any(member=>!System.Text.RegularExpressions.Regex.IsMatch(member??"","^[A-Za-z_]\\w*$"))))e.Add("exact enum member inventory required: "+t.type);
+                if(p.revision==2&&t.kind=="enum"&&(t.enum_members==null||t.enum_members.Count==0||t.enum_members.Count!=t.enum_members.Distinct(StringComparer.Ordinal).Count()||t.enum_members.Any(member=>!System.Text.RegularExpressions.Regex.IsMatch(member??"",@"^[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Nd}\p{Pc}\p{Mn}\p{Mc}]*$"))))e.Add("exact enum member inventory required: "+t.type);
                 foreach(var field in t.fields??new List<FieldObligation>())if(p.revision==1&&IsStringShape(field.type))e.Add("string baseline configuration unsupported: "+t.type+"."+field.path);
                 var disposition=p.type_dispositions.Where(d=>d.type==t.type&&d.source_path==t.source_path).ToList();
                 string expected=t.@abstract?"abstract":t.hosting!="none"?"hosted":t.kind=="interface"?"interface":t.kind=="enum"?"enum":t.kind=="struct"||p.revision==2&&t.serializable&&(t.fields?.Count??0)>0?"data":"controller_constructed";
