@@ -112,6 +112,7 @@ namespace GDAI.Bridge.Editor.LayerA
                         errors.Add($"SHA-256 mismatch for {p} (content does not match declared hash).");
                 }
             }
+            errors.AddRange(AssetPayloadImporter.ValidateBatch(dto.assets, dto.project_id));
             return errors;
         }
 

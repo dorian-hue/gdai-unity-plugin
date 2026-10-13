@@ -151,6 +151,63 @@ SceneRoots:
         private sealed class MarkerRollbackState { public bool present; public string profile,snapshot,role; }
         private sealed class HostRollbackState { public bool active,aspectLock; public MarkerRollbackState marker; public HashSet<string> components=new HashSet<string>(); }
         private sealed class OwnedRollbackPlan { public GdaiPlayableAssetsManifest prior; public Dictionary<string,HostRollbackState> hosts=new Dictionary<string,HostRollbackState>(); }
+        private sealed class RetainedFieldSnapshot : IDisposable
+        {
+            private readonly Object holder;private readonly GameObject shell;private readonly string path;private readonly Dictionary<string,string> objectIdentities;
+            private RetainedFieldSnapshot(Object holder,GameObject shell,string path,Dictionary<string,string> objectIdentities){this.holder=holder;this.shell=shell;this.path=path;this.objectIdentities=objectIdentities;}
+            private static bool HasSemanticChildren(SerializedProperty property)
+            {
+                if(property.propertyType==SerializedPropertyType.ManagedReference)throw new InvalidOperationException("managed reference retention unsupported: "+property.propertyPath);
+                return property.propertyType==SerializedPropertyType.Generic||property.isArray&&property.propertyType!=SerializedPropertyType.String;
+            }
+            private static IEnumerable<SerializedProperty> Properties(SerializedProperty root)
+            {
+                var current=root.Copy();var end=root.GetEndProperty();
+                while(true) {yield return current.Copy();if(!current.Next(HasSemanticChildren(current))||SerializedProperty.EqualContents(current,end))yield break;}
+            }
+            public static RetainedFieldSnapshot Capture(Object instance,SerializedProperty live,GameObject prefabRoot,string prefabPath)
+            {
+                GameObject shell=null;Object holder=null;
+                try {
+                    if(instance is ScriptableObject)holder=ScriptableObject.CreateInstance(instance.GetType());
+                    else {shell=new GameObject("GDAI_RetainedFieldSnapshot");shell.SetActive(false);holder=shell.AddComponent(instance.GetType());}
+                    using(var copy=new SerializedObject(holder)){copy.CopyFromSerializedProperty(live);copy.ApplyModifiedPropertiesWithoutUndo();}
+                    var identities=new Dictionary<string,string>();foreach(var property in Properties(live))if(property.propertyType==SerializedPropertyType.ObjectReference)identities.Add(property.propertyPath,StableObjectIdentity(property.objectReferenceValue,prefabRoot,prefabPath));
+                    return new RetainedFieldSnapshot(holder,shell,live.propertyPath,identities);
+                } catch {if(shell!=null)Object.DestroyImmediate(shell);else if(holder!=null)Object.DestroyImmediate(holder);throw;}
+            }
+            public void Verify(SerializedProperty live,GameObject prefabRoot,string prefabPath)
+            {
+                using(var retained=new SerializedObject(holder)) {
+                    var expected=retained.FindProperty(path)??throw new InvalidOperationException("retained field snapshot missing: "+path);
+                    foreach(var property in Properties(live)) {
+                        var prior=retained.FindProperty(property.propertyPath)??throw new InvalidOperationException("retained nested field snapshot missing: "+property.propertyPath);
+                        if(property.propertyType!=prior.propertyType||property.isArray!=prior.isArray||property.isArray&&property.arraySize!=prior.arraySize)throw new InvalidOperationException("preserved user field shape changed: "+property.propertyPath);
+                        if(property.propertyType==SerializedPropertyType.ObjectReference) {
+                            if(!objectIdentities.TryGetValue(property.propertyPath,out var identity)||StableObjectIdentity(property.objectReferenceValue,prefabRoot,prefabPath)!=identity)throw new InvalidOperationException("preserved user field changed: "+property.propertyPath);
+                        } else if(!HasSemanticChildren(property)&&!SerializedProperty.DataEquals(property,prior))throw new InvalidOperationException("preserved user field changed: "+property.propertyPath);
+                    }
+                }
+            }
+            public void Dispose(){if(shell!=null)Object.DestroyImmediate(shell);else if(holder!=null)Object.DestroyImmediate(holder);}
+        }
+        private sealed class FieldMergePlan : IDisposable
+        {
+            public readonly HashSet<string> updateComponents=new HashSet<string>();
+            private readonly Dictionary<string,FieldUpdateDecision> decisions=new Dictionary<string,FieldUpdateDecision>();
+            private readonly Dictionary<string,RetainedFieldSnapshot> retained=new Dictionary<string,RetainedFieldSnapshot>();
+            private readonly Dictionary<string,JToken> rollbackStates=new Dictionary<string,JToken>();
+            private readonly HashSet<string> writesStarted=new HashSet<string>();
+            private static string Key(string host,string component,string field)=>host+"|"+component+"|"+field;
+            public void Add(string host,string component,string field,FieldUpdateDecision decision,Object instance,SerializedProperty property,GameObject prefabRoot,string prefabPath,JToken rollbackState=null){var key=Key(host,component,field);decisions.Add(key,decision);if(decision==FieldUpdateDecision.PreserveUserEdit)retained.Add(key,RetainedFieldSnapshot.Capture(instance,property,prefabRoot,prefabPath));if(decision==FieldUpdateDecision.CreatorUpdate&&rollbackState!=null)rollbackStates.Add(key,rollbackState.DeepClone());}
+            public void AdmitInitialWrite(string host,string component,string field){decisions.Add(Key(host,component,field),FieldUpdateDecision.CreatorUpdate);}
+            public FieldUpdateDecision Decision(string host,string component,string field)=>decisions.TryGetValue(Key(host,component,field),out var decision)?decision:FieldUpdateDecision.CreatorUpdate;
+            public void MarkWriteStarted(string host,string component,string field){var key=Key(host,component,field);if(!decisions.TryGetValue(key,out var decision)||decision!=FieldUpdateDecision.CreatorUpdate)throw new InvalidOperationException("field write was not admitted: "+field);writesStarted.Add(key);}
+            public bool WasWritten(string host,string component,string field)=>writesStarted.Contains(Key(host,component,field));
+            public JToken RollbackState(string host,string component,string field)=>rollbackStates.TryGetValue(Key(host,component,field),out var state)?state:null;
+            public void VerifyRetained(string host,string component,string field,SerializedProperty property,GameObject prefabRoot,string prefabPath){if(retained.TryGetValue(Key(host,component,field),out var snapshot))snapshot.Verify(property,prefabRoot,prefabPath);else throw new InvalidOperationException("retained user field snapshot missing: "+field);}
+            public void Dispose(){foreach(var snapshot in retained.Values)snapshot.Dispose();retained.Clear();rollbackStates.Clear();writesStarted.Clear();}
+        }
         public static Type Resolve(GdaiSourceBoundPlayablePlan.ComponentSpec spec,string kind)
         {
             if(spec.source_path=="builtin")return spec.native_defaults&&kind!="config"?GdaiSourceBoundPlayablePlan.Builtin(spec.type)??throw new InvalidOperationException("unknown builtin"):throw new InvalidOperationException("explicit native defaults required");
@@ -473,7 +530,7 @@ SceneRoots:
             if(markers.Length!=hosts.Length)throw new InvalidOperationException("source-bound persisted ownership count mismatch");
             foreach(var host in hosts)if(markers.Count(marker=>marker.gameObject.name==host.name&&marker.ownedRole==host.id&&marker.snapshotId==snapshot)!=1||m.owned_scene_objects.Count(o=>o.name==host.name&&o.role==host.id&&o.profile_id==c.profile_id&&o.snapshot_id==snapshot)!=1)throw new InvalidOperationException("source-bound persisted host ownership mismatch");
         }
-        private static GdaiPlayableReceipt BuildPersistedReceipt(GdaiPlayableContract c,string project,string snapshot,string sha,string scenePath,DateTime now,bool requireActive)
+        private static GdaiPlayableReceipt BuildPersistedReceipt(GdaiPlayableContract c,string project,string snapshot,string sha,string scenePath,DateTime now,bool requireActive,FieldMergePlan mergePlan)
         {
             var persisted=EditorSceneManager.OpenPreviewScene(scenePath);
             try {
@@ -488,12 +545,12 @@ SceneRoots:
                 if(objects!=null)Check("implicit_geometry",()=>VerifyImplicitGeometry(c,objects,requireActive));
                 if(objects!=null)foreach(var host in c.source_bound_plan.objects) {
                     Check("host:"+host.id,()=>{if(host.kind!="scene")return;var go=(GameObject)objects[host.id];var marker=go.GetComponent<GdaiGeneratedPlayableMarker>();if(marker==null||marker.profileId!=c.profile_id||marker.snapshotId!=snapshot||marker.ownedRole!=host.id)throw new InvalidOperationException("host ownership mismatch");if(requireActive&&!go.activeSelf||!requireActive&&go.activeSelf)throw new InvalidOperationException("inactive/activation ordering mismatch");});
-                    foreach(var comp in host.components)Check("fields:"+comp.id,()=>{GameObject contents=null;Object target=objects[host.id];try {if(host.kind=="prefab"){contents=PrefabUtility.LoadPrefabContents(host.asset_path);target=contents;if(!contents.activeSelf)throw new InvalidOperationException("bound prefab must be activated for runtime instantiation");}var type=Resolve(comp,host.kind);var instance=target is GameObject go?go.GetComponent(type):target;if(instance==null||instance.GetType()!=type)throw new InvalidOperationException("saved component type missing");CheckCoverage(instance,comp,c.source_bound_plan.revision);BindFields(instance,comp,c,objects,host,target,false);}finally {if(contents!=null)PrefabUtility.UnloadPrefabContents(contents);}});
+                    foreach(var comp in host.components)Check("fields:"+comp.id,()=>{GameObject contents=null;Object target=objects[host.id];try {if(host.kind=="prefab"){contents=PrefabUtility.LoadPrefabContents(host.asset_path);target=contents;if(!contents.activeSelf)throw new InvalidOperationException("bound prefab must be activated for runtime instantiation");}var type=Resolve(comp,host.kind);var instance=target is GameObject go?go.GetComponent(type):target;if(instance==null||instance.GetType()!=type)throw new InvalidOperationException("saved component type missing");CheckCoverage(instance,comp,c.source_bound_plan.revision);BindFieldsCore(instance,comp,c,objects,host,target,false,false,mergePlan);}finally {if(contents!=null)PrefabUtility.UnloadPrefabContents(contents);}});
                 }
                 r.status=r.failures.Count==0?"PASS":"FAIL";return r;
             }finally {if(persisted.IsValid())EditorSceneManager.ClosePreviewScene(persisted);}
         }
-        public static GdaiPlayableComposerCta.Result Run(GdaiPlayableContract c,string project,string snapshot,string sha,string scenePath,DateTime now)
+        public static GdaiPlayableComposerCta.Result Run(GdaiPlayableContract c,string project,string snapshot,string sha,string scenePath,DateTime now,Action completeTransaction=null)
         {
             var result=new GdaiPlayableComposerCta.Result();
             var op=GdaiPlayableOperation.Create(Root,project,snapshot,c.schema_version,c.contract_revision,sha,scenePath,now);result.OperationId=op.operation_id;
@@ -509,6 +566,7 @@ SceneRoots:
             bool canonicalOpenedByOperation=false;
             var canonicalScene=default(UnityEngine.SceneManagement.Scene);
             OwnedRollbackPlan rollbackPlan=null;
+            FieldMergePlan mergePlan=null;
             byte[] previousManifest=null;var manifestPath=Path.Combine(Root,GdaiPlayableOwnershipManifest.ManifestPath);var manifestTemporaryPath=manifestPath+".tmp";var manifestTemporaryExistedBefore=File.Exists(manifestTemporaryPath);
             if(File.Exists(manifestPath))previousManifest=File.ReadAllBytes(manifestPath);
             bool sceneSaved=false;
@@ -532,7 +590,8 @@ SceneRoots:
                     else if(File.Exists(Path.Combine(Root,host.asset_path))&&!PriorAsset(prior,host.asset_path,project,c.profile_id))throw new InvalidOperationException("unowned asset path: "+host.asset_path);
                 }
                 // Compare every existing field before any planned object/field mutation.
-                var updateComponents=AdmitExistingFields(c,prior);
+                mergePlan=new FieldMergePlan();
+                AdmitExistingFields(c,prior,mergePlan);
                 rollbackPlan=BuildRollbackPlan(c,prior);
                 foreach(var host in c.source_bound_plan.objects.Where(h=>h.kind!="scene"))
                     if(!File.Exists(Path.Combine(Root,host.asset_path))) {createdAssetPaths.Add(host.asset_path);TrackMissingOwnedFolders(host.asset_path,createdOwnedFolderPaths);}
@@ -567,7 +626,7 @@ SceneRoots:
                         foreach(var comp in host.components) {
                             var instance=target is GameObject g?g.GetComponent(types[comp.id]):target;
                             CheckCoverage(instance,comp,c.source_bound_plan.revision);
-                            BindFields(instance,comp,c,objects,host,target,true,updateComponents.Contains(host.id+"|"+comp.id));
+                            BindFieldsCore(instance,comp,c,objects,host,target,true,mergePlan.updateComponents.Contains(host.id+"|"+comp.id),mergePlan);
                         }
                         if(contents!=null) {contents.SetActive(true);PrefabUtility.SaveAsPrefabAsset(contents,host.asset_path);objects[host.id]=AssetDatabase.LoadAssetAtPath<GameObject>(host.asset_path);}
                         else EditorUtility.SetDirty(target);
@@ -586,7 +645,8 @@ SceneRoots:
                 sceneSaved=true;
                 op.Advance(Root,GdaiPlayablePhase.SceneSaved,now);
                 if(!GdaiPlayableOwnershipManifest.WriteSourceBound(c,project,snapshot,sha,scenePath,out var manifestError))throw new InvalidOperationException(manifestError);
-                result.Receipt=BuildPersistedReceipt(c,project,snapshot,sha,scenePath,now,false);
+                completeTransaction?.Invoke();
+                result.Receipt=BuildPersistedReceipt(c,project,snapshot,sha,scenePath,now,false,mergePlan);
                 if(!result.Receipt.IsPass)throw new InvalidOperationException("saved persisted readback: "+string.Join(";",result.Receipt.failures));
                 // Only after independent persisted readback may scene objects activate.
                 foreach(var host in c.source_bound_plan.objects.Where(o=>o.kind=="scene")) {
@@ -595,7 +655,7 @@ SceneRoots:
                     go.SetActive(true);
                 }
                 if(!EditorSceneManager.SaveScene(canonicalScene,scenePath))throw new InvalidOperationException("activated scene save failed");
-                result.Receipt=BuildPersistedReceipt(c,project,snapshot,sha,scenePath,now,true);
+                result.Receipt=BuildPersistedReceipt(c,project,snapshot,sha,scenePath,now,true,mergePlan);
                 if(!result.Receipt.IsPass)throw new InvalidOperationException("activation/readback receipt failed");
                 PublishWithCompleteBaseline(()=>GdaiPlayableOwnershipManifest.CommitSourceBoundBaseline(c),()=>{if(!GdaiPlayableReceiptWriter.Write(result.Receipt,out var receiptError))throw new InvalidOperationException("activation/readback receipt failed");});
                 op.Advance(Root,GdaiPlayablePhase.ReceiptWritten,now);op.Advance(Root,GdaiPlayablePhase.Complete,now);result.Completed=true;return result;
@@ -603,7 +663,7 @@ SceneRoots:
                 var rollbackErrors=new List<string>();
                 // Existing owned state is restored only from the prior admitted baseline and
                 // explicit owned marker/active/component-presence metadata. Opaque fields are skipped.
-                if(rollbackPlan!=null)try {RestorePriorOwnedState(c,rollbackPlan,canonicalScene);}catch(Exception rollback){rollbackErrors.Add("owned state: "+rollback.Message);}
+                if(rollbackPlan!=null)try {RestorePriorOwnedState(c,rollbackPlan,canonicalScene,mergePlan);}catch(Exception rollback){rollbackErrors.Add("owned state: "+rollback.Message);}
                 // Roll back only artifacts proven absent before this attempt and scene hosts
                 // created by this exact operation. Existing/user assets are never deleted.
                 var removeCreatedSceneHosts=createdSceneHosts.Any(go=>go!=null);
@@ -642,14 +702,25 @@ SceneRoots:
                 }catch(Exception cleanup){rollbackErrors.Add("manifest: "+cleanup.Message);}
                 try {DeleteCreatedOwnedFolders(createdOwnedFolderPaths);}catch(Exception cleanup){rollbackErrors.Add("created folders: "+cleanup.Message);}
                 result.Error="source-bound composition: "+ex.Message+(rollbackErrors.Count==0?"":" | rollback failed: "+string.Join("; ",rollbackErrors));op.Fail(Root,now,result.Error);return result;
-            }finally {foreach(var go in transient)if(go!=null)Object.DestroyImmediate(go);if(preview.IsValid())EditorSceneManager.ClosePreviewScene(preview);}
+            }finally {mergePlan?.Dispose();foreach(var go in transient)if(go!=null)Object.DestroyImmediate(go);if(preview.IsValid())EditorSceneManager.ClosePreviewScene(preview);}
         }
-        public enum FieldUpdateDecision { CreatorUpdate, AlreadyApplied, Conflict, MissingBaseline }
+        public enum FieldUpdateDecision { CreatorUpdate, AlreadyApplied, PreserveUserEdit, Conflict, MissingBaseline }
         public static FieldUpdateDecision DecideFieldUpdate(JToken prior,JToken live,JToken expected,bool hasBaseline)
         {
             if(!hasBaseline)return FieldUpdateDecision.MissingBaseline;
             if(JToken.DeepEquals(live,expected))return FieldUpdateDecision.AlreadyApplied;
+            if(JToken.DeepEquals(prior,expected))return FieldUpdateDecision.PreserveUserEdit;
             return JToken.DeepEquals(live,prior)?FieldUpdateDecision.CreatorUpdate:FieldUpdateDecision.Conflict;
+        }
+        public static bool ShouldApplyFieldUpdate(FieldUpdateDecision decision)
+        {
+            if(decision==FieldUpdateDecision.Conflict||decision==FieldUpdateDecision.MissingBaseline)throw new InvalidOperationException("unadmitted field decision");
+            return decision==FieldUpdateDecision.CreatorUpdate;
+        }
+        public static bool ShouldRestorePriorField(FieldUpdateDecision decision)
+        {
+            if(decision==FieldUpdateDecision.Conflict||decision==FieldUpdateDecision.MissingBaseline)throw new InvalidOperationException("unadmitted field decision");
+            return decision==FieldUpdateDecision.CreatorUpdate;
         }
         private static bool Sensitive(string field) => GdaiSourceBoundPlayablePlan.SensitiveField(field);
         private static JToken FieldState(SerializedProperty p)
@@ -662,13 +733,59 @@ SceneRoots:
                 case SerializedPropertyType.Enum:case SerializedPropertyType.LayerMask:return new JObject { ["kind"]="integer",["value"]=p.intValue };
                 case SerializedPropertyType.Float:return new JObject { ["kind"]="float",["value"]=p.doubleValue };
                 case SerializedPropertyType.Boolean:return new JObject { ["kind"]="boolean",["value"]=p.boolValue };
-                case SerializedPropertyType.ObjectReference:return new JObject { ["kind"]="object",["identity"]=p.objectReferenceValue==null?"null":GlobalObjectId.GetGlobalObjectIdSlow(p.objectReferenceValue).ToString() };
+                case SerializedPropertyType.ObjectReference:return new JObject { ["kind"]="object",["identity"]=StableObjectIdentity(p.objectReferenceValue) };
                 case SerializedPropertyType.Vector2:case SerializedPropertyType.Vector3:case SerializedPropertyType.Vector4:
                     var vector=new JObject();foreach(var name in new[]{"x","y","z","w"}){var child=p.FindPropertyRelative(name);if(child!=null)vector[name]=FieldState(child);}return vector;
                 case SerializedPropertyType.Generic:
                     var data=new JObject();var childProperty=p.Copy();var end=p.GetEndProperty();bool enter=true;while(childProperty.Next(enter)&&!SerializedProperty.EqualContents(childProperty,end)){enter=false;if(childProperty.depth==p.depth+1)data[childProperty.name]=FieldState(childProperty);}return data;
                 default:throw new InvalidOperationException("non-sensitive field baseline unsupported: "+p.propertyType);
             }
+        }
+        private static int[] PrefabSiblingPath(Transform value,Transform root,string field)
+        {
+            var reversed=new List<int>();var current=value;
+            while(current!=root) {if(current==null)throw new InvalidOperationException("prefab-local object outside owned root: "+field);reversed.Add(current.GetSiblingIndex());current=current.parent;}
+            reversed.Reverse();return reversed.ToArray();
+        }
+        private static bool IsLoadedPrefabContentsReference(Object value,Object source)
+        {
+            if(value==null||source==null||EditorUtility.IsPersistent(value)||!EditorSceneManager.IsPreviewSceneObject(value))return false;
+            var gameObject=value as GameObject;if(gameObject==null&&value is Component component)gameObject=component.gameObject;if(gameObject==null)return false;
+            var sourcePath=AssetDatabase.GetAssetPath(source);if(string.IsNullOrEmpty(sourcePath)||!sourcePath.EndsWith(".prefab",StringComparison.OrdinalIgnoreCase))return false;
+            var previewPath=gameObject.scene.path;if(!string.IsNullOrEmpty(previewPath)&&!previewPath.EndsWith(".prefab",StringComparison.OrdinalIgnoreCase))return false;
+            return previewPath==sourcePath||PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(gameObject)==sourcePath;
+        }
+        private static string StableObjectIdentity(Object value,GameObject prefabRoot=null,string prefabPath=null)
+        {
+            if(value==null)return "null";
+            Transform transform=null;if(value is GameObject gameObject)transform=gameObject.transform;else if(value is Component component)transform=component.transform;
+            if(prefabRoot!=null&&!string.IsNullOrEmpty(prefabPath)&&transform!=null&&transform.root==prefabRoot.transform) {
+                var guid=AssetDatabase.AssetPathToGUID(prefabPath);if(string.IsNullOrEmpty(guid))throw new InvalidOperationException("prefab-local owner GUID unavailable");
+                var hierarchy=string.Join(".",PrefabSiblingPath(transform,prefabRoot.transform,"retained reference").Select(index=>index.ToString()));
+                if(value is GameObject)return "prefab-local|"+guid+"|"+hierarchy+"|game-object";
+                if(value is Transform)return "prefab-local|"+guid+"|"+hierarchy+"|transform";
+                var retainedComponent=(Component)value;var type=retainedComponent.GetType();var typeIdentity=type.AssemblyQualifiedName;if(string.IsNullOrEmpty(typeIdentity))throw new InvalidOperationException("prefab-local component type unavailable");
+                var matches=transform.gameObject.GetComponents(type);var componentIndex=Array.IndexOf(matches,retainedComponent);if(componentIndex<0)throw new InvalidOperationException("prefab-local component unavailable");
+                return "prefab-local|"+guid+"|"+hierarchy+"|component|"+typeIdentity+"|"+componentIndex;
+            }
+            var correspondingSource=PrefabUtility.GetCorrespondingObjectFromSource(value);var identityObject=IsLoadedPrefabContentsReference(value,correspondingSource)?correspondingSource:value;var objectId=GlobalObjectId.GetGlobalObjectIdSlow(identityObject);
+            if(objectId.Equals(default(GlobalObjectId)))throw new InvalidOperationException("stable object identity unavailable");return objectId.ToString();
+        }
+        private static Transform RemapPrefabTransform(Transform source,GameObject prefabContents,string field)
+        {
+            var path=PrefabSiblingPath(source,source.root,field);var mapped=prefabContents.transform;
+            foreach(var index in path) {if(index<0||index>=mapped.childCount)throw new InvalidOperationException("prior local prefab transform unavailable: "+field);mapped=mapped.GetChild(index);}
+            return mapped;
+        }
+        private static Object RemapPrefabObject(Object source,GameObject prefabContents,string field)
+        {
+            if(source is GameObject sourceObject)return RemapPrefabTransform(sourceObject.transform,prefabContents,field).gameObject;
+            if(source is Transform sourceTransform)return RemapPrefabTransform(sourceTransform,prefabContents,field);
+            if(source is Component sourceComponent) {
+                var mapped=RemapPrefabTransform(sourceComponent.transform,prefabContents,field);var sourceComponents=sourceComponent.gameObject.GetComponents(sourceComponent.GetType());var index=Array.IndexOf(sourceComponents,sourceComponent);var mappedComponents=mapped.gameObject.GetComponents(sourceComponent.GetType());
+                if(index<0||index>=mappedComponents.Length)throw new InvalidOperationException("prior local prefab component unavailable: "+field);return mappedComponents[index];
+            }
+            throw new InvalidOperationException("prior local prefab object unsupported: "+field);
         }
         private static JObject BaselineObject(JToken state,string field)
         {
@@ -695,12 +812,7 @@ SceneRoots:
                     if(identity=="null")property.objectReferenceValue=null;
                     else {
                         if(!GlobalObjectId.TryParse(identity,out var objectId))throw new InvalidOperationException("prior object identity invalid: "+property.propertyPath);var value=GlobalObjectId.GlobalObjectIdentifierToObjectSlow(objectId);if(value==null)throw new InvalidOperationException("prior object identity unavailable: "+property.propertyPath);
-                        if(prefabContents!=null&&AssetDatabase.GetAssetPath(value)==prefabPath) {
-                            if(value is GameObject)value=prefabContents;
-                            else if(value is Transform)value=prefabContents.transform;
-                            else if(value is Component component)value=prefabContents.GetComponent(component.GetType());
-                            if(value==null)throw new InvalidOperationException("prior local prefab identity unavailable: "+property.propertyPath);
-                        }
+                        if(prefabContents!=null&&AssetDatabase.GetAssetPath(value)==prefabPath)value=RemapPrefabObject(value,prefabContents,property.propertyPath);
                         property.objectReferenceValue=value;
                     }
                     return;
@@ -727,7 +839,7 @@ SceneRoots:
             }
             return plan;
         }
-        private static void RestorePriorOwnedState(GdaiPlayableContract c,OwnedRollbackPlan plan,UnityEngine.SceneManagement.Scene canonicalScene)
+        private static void RestorePriorOwnedState(GdaiPlayableContract c,OwnedRollbackPlan plan,UnityEngine.SceneManagement.Scene canonicalScene,FieldMergePlan mergePlan)
         {
             var objects=ReadObjects(c);
             foreach(var host in c.source_bound_plan.objects.Where(host=>plan.hosts.ContainsKey(host.id))) {
@@ -739,13 +851,16 @@ SceneRoots:
                         if(instance==null)throw new InvalidOperationException("prior owned component unavailable: "+host.id+"/"+component.id);
                         using(var serialized=new SerializedObject(instance)) {
                             foreach(var field in component.fields) {
+                                if(mergePlan!=null&&!mergePlan.WasWritten(host.id,component.id,field.path))continue;
                                 var baseline=plan.prior.source_bound_field_baselines.Where(item=>item.host_id==host.id&&item.component_id==component.id&&item.field==field.path&&item.type==component.type&&item.source_path==component.source_path).ToList();
                                 if(baseline.Count!=1)throw new InvalidOperationException("prior rollback baseline missing/ambiguous: "+host.id+"/"+component.id+"/"+field.path);
                                 if(baseline[0].policy=="preserve_external") {if(baseline[0].state!=null)throw new InvalidOperationException("opaque rollback baseline contains state: "+field.path);continue;}
                                 if(baseline[0].state==null)throw new InvalidOperationException("prior rollback state missing: "+field.path);
                                 var property=serialized.FindProperty(field.path)??throw new InvalidOperationException("prior rollback field absent: "+field.path);
                                 var fieldType=component.source_path=="builtin"?NativeType(property):Field(instance.GetType(),field.path).FieldType;
-                                if(baseline[0].policy=="declared_expected")Value(property,fieldType,baseline[0].state,c,objects,host,target,true);
+                                var actualState=mergePlan?.RollbackState(host.id,component.id,field.path);
+                                if(actualState!=null)RestoreFieldState(property,actualState,contents,host.kind=="prefab"?host.asset_path:null);
+                                else if(baseline[0].policy=="declared_expected")Value(property,fieldType,baseline[0].state,c,objects,host,target,true);
                                 else RestoreFieldState(property,baseline[0].state,contents,host.kind=="prefab"?host.asset_path:null);
                             }
                             serialized.ApplyModifiedPropertiesWithoutUndo();EditorUtility.SetDirty(instance);
@@ -770,21 +885,21 @@ SceneRoots:
             AssetDatabase.SaveAssets();
             if(canonicalScene.IsValid()&&canonicalScene.isLoaded&&!EditorSceneManager.SaveScene(canonicalScene,c.canonical_scene.path))throw new InvalidOperationException("prior canonical rollback save failed");
         }
-        private static HashSet<string> AdmitExistingFields(GdaiPlayableContract c,GdaiPlayableAssetsManifest prior)
+        private static void AdmitExistingFields(GdaiPlayableContract c,GdaiPlayableAssetsManifest prior,FieldMergePlan plan)
         {
-            var existing=new Dictionary<string,Object>();var components=new HashSet<string>();
+            var existing=new Dictionary<string,Object>();
             foreach(var host in c.source_bound_plan.objects) {
                 Object target=host.kind=="scene"?SceneMatches(host.name).SingleOrDefault():AssetDatabase.LoadAssetAtPath<Object>(host.asset_path);
                 if(target!=null)existing.Add(host.id,target);
             }
-            if(existing.Count==0)return components;
-            if(prior==null||prior.source_bound_baseline_revision!=c.source_bound_plan.revision||prior.source_bound_field_baselines==null)throw new InvalidOperationException("safe second-sync requires prior validated field baseline; old manifest needs authorized readback/migration, no values adopted");
-            AdmitGeometry(c,prior,existing);
-            foreach(var host in c.source_bound_plan.objects.Where(h=>existing.ContainsKey(h.id)))foreach(var comp in host.components) {
+            if(existing.Count>0&&(prior==null||prior.source_bound_baseline_revision!=c.source_bound_plan.revision||prior.source_bound_field_baselines==null))throw new InvalidOperationException("safe second-sync requires prior validated field baseline; old manifest needs authorized readback/migration, no values adopted");
+            if(existing.Count>0)AdmitGeometry(c,prior,existing);
+            foreach(var host in c.source_bound_plan.objects)foreach(var comp in host.components) {
+                if(!existing.ContainsKey(host.id)) {foreach(var field in comp.fields.Where(field=>field.disposition!="preserve_external"))plan.AdmitInitialWrite(host.id,comp.id,field.path);continue;}
                 var target=existing[host.id];var type=Resolve(comp,host.kind);var instance=target is GameObject go?go.GetComponent(type):target;
-                if(instance==null){if(prior.source_bound_field_baselines.Any(b=>b.host_id==host.id&&b.component_id==comp.id))throw new InvalidOperationException("user removed prior component: "+comp.id);continue;}
+                if(instance==null){if(prior.source_bound_field_baselines.Any(b=>b.host_id==host.id&&b.component_id==comp.id))throw new InvalidOperationException("user removed prior component: "+comp.id);foreach(var field in comp.fields.Where(field=>field.disposition!="preserve_external"))plan.AdmitInitialWrite(host.id,comp.id,field.path);continue;}
                 CheckCoverage(instance,comp,c.source_bound_plan.revision);
-                components.Add(host.id+"|"+comp.id);
+                plan.updateComponents.Add(host.id+"|"+comp.id);
                 using(var so=new SerializedObject(instance))foreach(var field in comp.fields) {
                     var baseline=prior.source_bound_field_baselines.Where(b=>b.host_id==host.id&&b.component_id==comp.id&&b.field==field.path&&b.type==comp.type&&b.source_path==comp.source_path).ToList();
                     if(baseline.Count!=1)throw new InvalidOperationException("prior field baseline missing/ambiguous: "+host.id+"/"+comp.id+"/"+field.path);
@@ -795,17 +910,31 @@ SceneRoots:
                         if(baseline[0].policy!="declared_expected"||baseline[0].state==null)throw new InvalidOperationException("declared baseline missing: "+host.id+"/"+comp.id+"/"+field.path);
                         var priorField=new GdaiSourceBoundPlayablePlan.Field {path=field.path,disposition="value",value=baseline[0].state};
                         var matchesPrior=MatchesDeclaredProperty(instance,property,fieldType,priorField,c,existing,host,target);var matchesDeclaredNew=MatchesDeclaredProperty(instance,property,fieldType,field,c,existing,host,target);
-                        if(!matchesDeclaredNew&&!matchesPrior)throw new InvalidOperationException("user field conflict before mutation: "+host.id+"/"+comp.id+"/"+field.path);
+                        var creatorUnchanged=JToken.DeepEquals(baseline[0].state,field.value);
+                        var declaredDecision=matchesDeclaredNew?FieldUpdateDecision.AlreadyApplied:creatorUnchanged?FieldUpdateDecision.PreserveUserEdit:matchesPrior?FieldUpdateDecision.CreatorUpdate:FieldUpdateDecision.Conflict;
+                        if(declaredDecision==FieldUpdateDecision.Conflict)throw new InvalidOperationException("user field conflict before mutation: "+host.id+"/"+comp.id+"/"+field.path);
+                        plan.Add(host.id,comp.id,field.path,declaredDecision,instance,property,host.kind=="prefab"?target as GameObject:null,host.kind=="prefab"?host.asset_path:null);
                         if(field.disposition=="source_default"&&!matchesDeclaredNew)VerifyFreshDefault(type,comp,field,c,existing,host);
                         continue;
                     }
-                    var live=FieldState(property);bool matchesNew=false;
-                    try {var single=new GdaiSourceBoundPlayablePlan.ComponentSpec {source_path=comp.source_path,type=comp.type,fields=new List<GdaiSourceBoundPlayablePlan.Field>{field}};BindFields(instance,single,c,existing,host,target,false);matchesNew=true;}catch(InvalidOperationException){}
-                    var decision=DecideFieldUpdate(baseline[0].state,live,matchesNew?live:null,true);
-                    if(decision==FieldUpdateDecision.Conflict)throw new InvalidOperationException("user field conflict before mutation: "+host.id+"/"+comp.id+"/"+field.path);
-                    if(field.disposition=="source_default"&&!matchesNew)VerifyFreshDefault(type,comp,field,c,existing,host);
+                    var live=FieldState(property);var expected=ExpectedFieldState(type,comp,field,c,existing,host,target);
+                    var fieldDecision=DecideFieldUpdate(baseline[0].state,live,expected,true);
+                    if(fieldDecision==FieldUpdateDecision.Conflict)throw new InvalidOperationException("user field conflict before mutation: "+host.id+"/"+comp.id+"/"+field.path);
+                    plan.Add(host.id,comp.id,field.path,fieldDecision,instance,property,host.kind=="prefab"?target as GameObject:null,host.kind=="prefab"?host.asset_path:null,live);
+                    if(field.disposition=="source_default"&&!JToken.DeepEquals(live,expected))VerifyFreshDefault(type,comp,field,c,existing,host);
                 }
-            }return components;
+            }
+        }
+        private static JToken ExpectedFieldState(Type type,GdaiSourceBoundPlayablePlan.ComponentSpec comp,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self)
+        {
+            GameObject shell=null;Object prototype=null;
+            try {
+                if(typeof(ScriptableObject).IsAssignableFrom(type))prototype=ScriptableObject.CreateInstance(type);
+                else {shell=new GameObject("GDAI_ExpectedFieldState");shell.SetActive(false);prototype=shell.AddComponent(type);}
+                var single=new GdaiSourceBoundPlayablePlan.ComponentSpec {id=comp.id,source_path=comp.source_path,type=comp.type,fields=new List<GdaiSourceBoundPlayablePlan.Field>{field}};
+                BindFieldsCore(prototype,single,c,objects,host,self,true,true,null);
+                using(var serialized=new SerializedObject(prototype)){var property=serialized.FindProperty(field.path)??throw new InvalidOperationException("expected field absent: "+field.path);return FieldState(property);}
+            } finally {if(shell!=null)Object.DestroyImmediate(shell);else if(prototype!=null)Object.DestroyImmediate(prototype);}
         }
         private static void VerifyFreshDefault(Type type,GdaiSourceBoundPlayablePlan.ComponentSpec comp,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host)
         {
@@ -828,7 +957,7 @@ SceneRoots:
                     var property=so.FindProperty(field.path);if(property==null)throw new InvalidOperationException("missing baseline field: "+field.path);
                     var fieldType=comp.source_path=="builtin"?NativeType(property):Field(instance.GetType(),field.path).FieldType;
                     if(c.source_bound_plan.revision==2&&DeclaredNativeEqualityShape(fieldType,new HashSet<Type>()))result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,policy="declared_expected",state=field.value.DeepClone()});
-                    else {if(property.propertyType==SerializedPropertyType.String)throw new InvalidOperationException("missing/unsupported baseline field: "+field.path);result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,state=FieldState(property)});}
+                    else {if(property.propertyType==SerializedPropertyType.String)throw new InvalidOperationException("missing/unsupported baseline field: "+field.path);result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,state=ExpectedFieldState(instance.GetType(),comp,field,c,objects,host,target)});}
                 }
             }
             foreach(var w in ImplicitGeometryWrites(c))result.Add(new GdaiSourceBoundFieldBaseline {host_id=w.host_id,component_id=w.component_id,type=w.type,source_path="__implicit_geometry",field=w.field,state=GeometryState((GameObject)objects[w.host_id],w)});
@@ -858,6 +987,8 @@ SceneRoots:
             }return d;
         }
         public static void BindFields(Object instance,GdaiSourceBoundPlayablePlan.ComponentSpec comp,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self,bool write,bool updateSourceDefaults=false)
+            =>BindFieldsCore(instance,comp,c,objects,host,self,write,updateSourceDefaults,null);
+        private static void BindFieldsCore(Object instance,GdaiSourceBoundPlayablePlan.ComponentSpec comp,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self,bool write,bool updateSourceDefaults,FieldMergePlan mergePlan)
         {
             var revision=c?.source_bound_plan?.revision??1;GdaiSourceBoundPlayablePlan.RequireSafeFields(comp.fields,revision);
             if(instance==null)throw new InvalidOperationException("planned component missing");
@@ -866,7 +997,11 @@ SceneRoots:
                 foreach(var f in comp.fields) {
                     if(f.disposition=="preserve_external")continue;
                     var property=so.FindProperty(f.path);if(property==null)throw new InvalidOperationException("field missing: "+f.path);
+                    var decision=mergePlan?.Decision(host.id,comp.id,f.path)??FieldUpdateDecision.CreatorUpdate;
+                    if(mergePlan!=null&&write&&!ShouldApplyFieldUpdate(decision)){if(decision==FieldUpdateDecision.PreserveUserEdit)mergePlan.VerifyRetained(host.id,comp.id,f.path,property,host.kind=="prefab"?self as GameObject:null,host.kind=="prefab"?host.asset_path:null);continue;}
+                    if(mergePlan!=null&&!write&&decision==FieldUpdateDecision.PreserveUserEdit){mergePlan.VerifyRetained(host.id,comp.id,f.path,property,host.kind=="prefab"?self as GameObject:null,host.kind=="prefab"?host.asset_path:null);continue;}
                     var expectedType=comp.source_path=="builtin"?NativeType(property):Field(instance.GetType(),f.path).FieldType;
+                    if(mergePlan!=null&&write)mergePlan.MarkWriteStarted(host.id,comp.id,f.path);
                     if(!write&&revision==2&&DeclaredNativeEqualityShape(expectedType,new HashSet<Type>())) {if(!MatchesDeclaredProperty(instance,property,expectedType,f,c,objects,host,self))throw new InvalidOperationException("declared text/curve readback mismatch: "+f.path);continue;}
                     if(f.disposition=="reference") {
                         var target=Reference(f.reference_kind,f.target_id,f.target_component,c,objects,host,self);
@@ -882,7 +1017,7 @@ SceneRoots:
                 }
                 if(write) {so.ApplyModifiedPropertiesWithoutUndo();EditorUtility.SetDirty(instance);}
             }
-            if(write)BindFields(instance,comp,c,objects,host,self,false);
+            if(write)BindFieldsCore(instance,comp,c,objects,host,self,false,false,mergePlan);
         }
         private static bool DeclaredNativeEqualityShape(Type type,HashSet<Type> seen) {
             if(type==typeof(string)||type==typeof(AnimationCurve))return true;var inner=ElementType(type);if(inner!=null)return DeclaredNativeEqualityShape(inner,seen);
@@ -922,6 +1057,10 @@ SceneRoots:
                 var path=(string)entries[0]["unity_path"];
                 var registry=GdaiImportedAssetRegistry.All().Where(a=>a.asset_id==id&&a.unity_path==path).ToList();
                 if(registry.Count!=1)throw new InvalidOperationException("adopted asset imported registry mismatch");
+                var expected=entries[0];var imported=registry[0];
+                string expectedType=(string)expected["asset_type"],expectedMime=(string)expected["mime_type"],expectedProject=(string)expected["project_id"],expectedEntity=(string)expected["entity_id"],expectedCategory=(string)expected["audio_category"],expectedSlot=(string)expected["project_audio_asset_id"],expectedCandidate=(string)expected["audio_candidate_id"];
+                if(expectedType=="audio"&&expectedCategory=="bgm"&&(string.IsNullOrEmpty(expectedProject)||!string.IsNullOrEmpty(expectedEntity)||expectedSlot!=id||string.IsNullOrEmpty(expectedCandidate)))throw new InvalidOperationException("adopted BGM expected lineage incomplete");
+                if(expectedType!=null&&expectedType!=imported.asset_type||expectedMime!=null&&expectedMime!=imported.mime_type||expectedProject!=null&&expectedProject!=imported.source_project_id||expectedEntity!=null&&expectedEntity!=imported.entity_id||expectedCategory!=null&&expectedCategory!=imported.audio_category||expectedSlot!=null&&expectedSlot!=imported.project_audio_asset_id||expectedCandidate!=null&&expectedCandidate!=imported.audio_candidate_id)throw new InvalidOperationException("adopted asset imported lineage mismatch");
                 if(GdaiImportedAssetRegistry.TryGetSpriteByAssetId(id,out var sprite,out _))return sprite;
                 var asset=AssetDatabase.LoadAssetAtPath<Object>(path);if(asset==null)throw new InvalidOperationException("adopted asset unavailable");return asset;
             }

@@ -823,8 +823,15 @@ namespace GDAI.Bridge.Editor.LayerA
                 dto != null && dto.assets != null && dto.assets.Count > 0)
             {
                 var assetSummary = AssetPayloadImporter.ImportAll(dto.assets, dto.snapshot_id);
+                if (!assetSummary.Succeeded)
+                {
+                    _lastBinaryAssetCount = 0;
+                    _lastErrorDetail = assetSummary.Error ?? string.Join("\n", assetSummary.SkippedWithReason);
+                    SetStatus(BundleStatus.FailedWrite, "Binary asset transaction failed and was rolled back. Expand Troubleshooting for details.");
+                    return;
+                }
                 _lastBinaryAssetCount = assetSummary.Imported; // AUTO-0N P2 receipt input
-                _statusLine += $" Binary assets: {assetSummary.Imported} imported, {assetSummary.SkippedWithReason.Count} skipped.";
+                _statusLine += $" Binary assets: {assetSummary.Imported} imported atomically.";
                 if (dto.assets_skipped != null && dto.assets_skipped.Count > 0)
                     Debug.Log($"[GDAI][LayerA][Assets] Backend skipped {dto.assets_skipped.Count} asset(s) before delivery (see proxy assets_skipped).");
                 Repaint();

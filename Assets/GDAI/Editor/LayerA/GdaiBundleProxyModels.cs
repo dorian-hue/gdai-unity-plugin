@@ -61,6 +61,9 @@ namespace GDAI.Bridge.Editor.LayerA
         public string entity_id;
         public string asset_row_id;
         public string world_entity_name;
+        public string project_audio_asset_id;
+        public string audio_candidate_id;
+        public string audio_category;
     }
 
     [Serializable]
