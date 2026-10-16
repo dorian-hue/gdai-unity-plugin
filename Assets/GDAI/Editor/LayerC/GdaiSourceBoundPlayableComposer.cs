@@ -268,13 +268,14 @@ SceneRoots:
         }
         private static Type ElementType(Type t) => t.IsArray?t.GetElementType():t.IsGenericType&&t.GetGenericTypeDefinition()==typeof(List<>)?t.GetGenericArguments()[0]:null;
         private static bool UnitySerializableType(Type type,HashSet<Type> seen) {
-            if(typeof(Object).IsAssignableFrom(type)||type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return true;
+            if(typeof(Object).IsAssignableFrom(type)||type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Bounds)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return true;
             if(type.IsGenericType&&type.GetGenericTypeDefinition()==typeof(Dictionary<,>))return false;
             var inner=ElementType(type);if(inner!=null)return UnitySerializableType(inner,seen);
             return type.IsSerializable;
         }
         public static void RequireBaselineShape(Type type) => BaselineShape(type,new HashSet<Type>());
         private static void BaselineShape(Type type,HashSet<Type> seen) {
+            if(type==typeof(Bounds))throw new InvalidOperationException("Bounds requires revision2 configuration");
             if(type==typeof(string))throw new InvalidOperationException("string baseline configuration unsupported");
             if(typeof(Object).IsAssignableFrom(type)||type.IsEnum||new[]{typeof(int),typeof(float),typeof(double),typeof(long),typeof(short),typeof(byte),typeof(bool),typeof(Vector2),typeof(Vector3),typeof(Vector4),typeof(LayerMask)}.Contains(type))return;
             var inner=ElementType(type);if(inner!=null){BaselineShape(inner,seen);return;}
@@ -285,7 +286,7 @@ SceneRoots:
             }
         }
         private static void RequireRevision2Shape(Type type,HashSet<Type> seen) {
-            if(typeof(Object).IsAssignableFrom(type)||type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return;
+            if(typeof(Object).IsAssignableFrom(type)||type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Bounds)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return;
             if(type.IsGenericType&&type.GetGenericTypeDefinition()==typeof(Dictionary<,>))throw new InvalidOperationException("dictionary is not a Unity serialized field");
             var inner=ElementType(type);if(inner!=null){RequireRevision2Shape(inner,seen);return;}
             if(seen.Contains(type)||!type.IsSerializable)throw new InvalidOperationException("unsupported/cyclic revision2 configuration");
@@ -299,7 +300,7 @@ SceneRoots:
         }
         private static bool RuntimeRequired(Type type,HashSet<Type> seen,int revision) {
             if(typeof(Object).IsAssignableFrom(type))return true;var inner=ElementType(type);if(inner!=null)return RuntimeRequired(inner,seen,revision);
-            if(type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return false;
+            if(type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Bounds)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return false;
             if(seen.Contains(type))throw new InvalidOperationException("recursive serialized configuration unsupported");
             var next=new HashSet<Type>(seen){type};return SerializedTypeFields(type,revision).Any(f=>RuntimeRequired(f.FieldType,next,revision));
         }
@@ -312,6 +313,10 @@ SceneRoots:
             var inner=ElementType(type);if(inner!=null) {
                 if(!(value is JArray array)||RuntimeRequired(inner,new HashSet<Type>(),revision)&&array.Count==0)throw new InvalidOperationException("required runtime collection missing: "+path);
                 for(int i=0;i<array.Count;i++)RuntimeShape(property!=null&&i<property.arraySize?property.GetArrayElementAtIndex(i):null,inner,array[i],"value",seen,path+"["+i+"]",revision);return;
+            }
+            if(type==typeof(Bounds)) {
+                if(property!=null&&property.propertyType!=SerializedPropertyType.Bounds)throw new InvalidOperationException("runtime Bounds shape mismatch: "+path);
+                ParseBounds(value);return;
             }
             if(type.IsPrimitive||type.IsEnum||type==typeof(string)||type==typeof(AnimationCurve)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return;
             if(seen.Contains(type)||!type.IsSerializable)throw new InvalidOperationException("unsupported/cyclic compiled configuration: "+path);
@@ -734,6 +739,7 @@ SceneRoots:
                 case SerializedPropertyType.Float:return new JObject { ["kind"]="float",["value"]=p.doubleValue };
                 case SerializedPropertyType.Boolean:return new JObject { ["kind"]="boolean",["value"]=p.boolValue };
                 case SerializedPropertyType.ObjectReference:return new JObject { ["kind"]="object",["identity"]=StableObjectIdentity(p.objectReferenceValue) };
+                case SerializedPropertyType.Bounds:return new JObject { ["kind"]="bounds",["value"]=BoundsState(p.boundsValue) };
                 case SerializedPropertyType.Vector2:case SerializedPropertyType.Vector3:case SerializedPropertyType.Vector4:
                     var vector=new JObject();foreach(var name in new[]{"x","y","z","w"}){var child=p.FindPropertyRelative(name);if(child!=null)vector[name]=FieldState(child);}return vector;
                 case SerializedPropertyType.Generic:
@@ -816,6 +822,9 @@ SceneRoots:
                         property.objectReferenceValue=value;
                     }
                     return;
+                case SerializedPropertyType.Bounds:
+                    if((string)data["kind"]!="bounds"||data.Count!=2)throw new InvalidOperationException("prior Bounds baseline invalid: "+property.propertyPath);
+                    property.boundsValue=ParseBounds(data["value"]);return;
                 case SerializedPropertyType.Vector2:case SerializedPropertyType.Vector3:case SerializedPropertyType.Vector4:
                     foreach(var name in new[]{"x","y","z","w"}) {var child=property.FindPropertyRelative(name);if(child!=null)RestoreFieldState(child,data[name],prefabContents,prefabPath);}return;
                 case SerializedPropertyType.Generic:
@@ -1021,7 +1030,7 @@ SceneRoots:
         }
         private static bool DeclaredNativeEqualityShape(Type type,HashSet<Type> seen) {
             if(type==typeof(string)||type==typeof(AnimationCurve))return true;var inner=ElementType(type);if(inner!=null)return DeclaredNativeEqualityShape(inner,seen);
-            if(type.IsPrimitive||type.IsEnum||typeof(Object).IsAssignableFrom(type)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return false;
+            if(type.IsPrimitive||type.IsEnum||typeof(Object).IsAssignableFrom(type)||type==typeof(Bounds)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return false;
             if(!type.IsSerializable||seen.Contains(type))return false;var next=new HashSet<Type>(seen){type};return SerializedTypeFields(type,2).Any(f=>DeclaredNativeEqualityShape(f.FieldType,next));
         }
         private static bool MatchesDeclaredProperty(Object instance,SerializedProperty live,Type type,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self) {
@@ -1039,6 +1048,7 @@ SceneRoots:
                     if(p.name=="m_Sprite")return typeof(Sprite);
                     if(p.name=="m_Material")return typeof(Material);
                     throw new InvalidOperationException("unsupported native reference field: "+p.name);
+                case SerializedPropertyType.Bounds:return typeof(Bounds);
                 case SerializedPropertyType.Vector2:return typeof(Vector2);
                 case SerializedPropertyType.Vector3:return typeof(Vector3);
                 case SerializedPropertyType.Vector4:return typeof(Vector4);
@@ -1118,6 +1128,11 @@ SceneRoots:
                     if(!(v is JArray layers)||layers.Any(x=>x.Type!=JTokenType.String))throw new InvalidOperationException("named layer list required");
                     int mask=0;foreach(var layer in layers){var index=LayerMask.NameToLayer((string)layer);if(index<0)throw new InvalidOperationException("undefined layer");mask|=1<<index;}
                     if(write)p.intValue=mask;else if(p.intValue!=mask)throw new InvalidOperationException("layer mask readback mismatch");return;
+                case SerializedPropertyType.Bounds:
+                    if(type!=typeof(Bounds))throw new InvalidOperationException("native Bounds type required");
+                    var bounds=ParseBounds(v);
+                    if(write)p.boundsValue=bounds;
+                    else if(!p.boundsValue.center.Equals(bounds.center)||!p.boundsValue.extents.Equals(bounds.extents))throw new InvalidOperationException("Bounds readback mismatch");return;
                 case SerializedPropertyType.Vector2: Vector(p,v,new[]{"x","y"},write);return;
                 case SerializedPropertyType.Vector3: Vector(p,v,new[]{"x","y","z"},write);return;
                 case SerializedPropertyType.Vector4: Vector(p,v,new[]{"x","y","z","w"},write);return;
@@ -1129,6 +1144,30 @@ SceneRoots:
                     foreach(var name in names){if(Sensitive(name))throw new InvalidOperationException("sensitive nested configuration unsupported");Value(p.FindPropertyRelative(name),Field(type,name).FieldType,data[name],c,objects,host,self,write);}return;
                 default:throw new InvalidOperationException("unsupported serialized type: "+p.propertyType);
             }
+        }
+        // Bounds serializes center and extents as Single values. Never round-trip
+        // through size: halving a subnormal size can silently change the value.
+        private static Vector3 BoundsVector(JToken value) {
+            var names=new[]{"x","y","z"};
+            if(!(value is JObject data)||data.Count!=3||!new HashSet<string>(names).SetEquals(data.Properties().Select(item=>item.Name)))throw new InvalidOperationException("complete Bounds vector required");
+            var values=new float[3];
+            for(var i=0;i<names.Length;i++) {
+                var token=data[names[i]];
+                if(token.Type!=JTokenType.Integer&&token.Type!=JTokenType.Float)throw new InvalidOperationException("numeric Bounds coordinate required");
+                var number=(double)token;var magnitude=Math.Abs(number);var converted=(float)number;
+                if(double.IsNaN(number)||double.IsInfinity(number)||magnitude>(double)float.MaxValue||number!=0&&magnitude<(double)float.Epsilon||float.IsNaN(converted)||float.IsInfinity(converted)||number!=0&&converted==0)throw new InvalidOperationException("Single-compatible Bounds coordinate required");
+                values[i]=converted;
+            }
+            return new Vector3(values[0],values[1],values[2]);
+        }
+        private static Bounds ParseBounds(JToken value) {
+            if(!(value is JObject data)||data.Count!=2||!new HashSet<string>(new[]{"center","extents"}).SetEquals(data.Properties().Select(item=>item.Name)))throw new InvalidOperationException("complete Bounds center/extents required");
+            return new Bounds {center=BoundsVector(data["center"]),extents=BoundsVector(data["extents"])};
+        }
+        private static JObject BoundsState(Bounds value) {
+            JObject VectorData(Vector3 vector)=>new JObject { ["x"]=(double)vector.x,["y"]=(double)vector.y,["z"]=(double)vector.z };
+            var state=new JObject { ["center"]=VectorData(value.center),["extents"]=VectorData(value.extents) };
+            ParseBounds(state);return state;
         }
         private static void Vector(SerializedProperty p,JToken v,string[] names,bool write)
         {
