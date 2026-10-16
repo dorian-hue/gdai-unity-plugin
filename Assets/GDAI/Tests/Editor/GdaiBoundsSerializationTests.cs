@@ -152,7 +152,7 @@ public class BoundsNativeHost : MonoBehaviour {
             var type=GdaiSourceBoundPlayablePlan.CompiledType("ProjectSlash.WorldBlocker");Assert.IsNotNull(type);var go=new GameObject("ActualWorldBlocker");go.SetActive(false);
             try {
                 var collider=go.AddComponent<BoxCollider2D>();var component=go.AddComponent(type);
-                var host=new GdaiSourceBoundPlayablePlan.Host {id="blocker",kind="scene"};var c=Contract();
+                var host=new GdaiSourceBoundPlayablePlan.Host {id="blocker",kind="scene",components=new List<GdaiSourceBoundPlayablePlan.ComponentSpec>()};var c=Contract();
                 var spec=new GdaiSourceBoundPlayablePlan.ComponentSpec {source_path=WorldPath,type=type.FullName,fields=new List<GdaiSourceBoundPlayablePlan.Field>{Value("Bounds",new JObject {["center"]=Vector(0,0,0),["extents"]=Vector(0,0,0)},"source_default"),new GdaiSourceBoundPlayablePlan.Field {path="BlockCollider",disposition="reference",reference_kind="component",target_id="blocker",target_component="collider"}}};
                 host.components.Add(new GdaiSourceBoundPlayablePlan.ComponentSpec {id="collider",type="UnityEngine.BoxCollider2D",source_path="builtin",native_defaults=true,fields=new List<GdaiSourceBoundPlayablePlan.Field>()});c.source_bound_plan.objects.Add(host);
                 GdaiSourceBoundPlayableComposer.CheckCoverage(component,spec,2);GdaiSourceBoundPlayableComposer.BindFields(component,spec,c,new Dictionary<string,Object>{{"blocker",go}},host,go,true);
