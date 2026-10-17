@@ -89,6 +89,8 @@ namespace GDAI.Bridge.Editor.LayerA
             var roles=context["roles"] as JArray; var placements=context["placements"] as JArray; var assets=context["assets"] as JArray;
             Req(roles!=null&&roles.Any(r=>(string)r["role"]=="player")&&roles.Any(r=>(string)r["role"]=="enemy"),"gated roles missing");
             Req(placements!=null&&placements.Count>0&&assets!=null&&assets.Count>0,"placements/adopted assets missing");
+            // Storage asset identities are opaque; owned host names retain the Id predicate.
+            bool AcceptedAsset(string id) => !string.IsNullOrEmpty(id)&&assets!=null&&assets.Count(a=>(string)a["asset_id"]==id)==1;
             var paths=new HashSet<string>();
             Req(p.sources!=null&&p.sources.Count>0,"source identities missing");
             foreach(var s in p.sources??new List<Source>()) Req(s.path!=null&&System.Text.RegularExpressions.Regex.IsMatch(s.path,"^Assets/GDAI_Generated/[A-Za-z0-9_/-]+\\.cs$")&&!s.path.Contains("..")&&paths.Add(s.path)&&System.Text.RegularExpressions.Regex.IsMatch(s.sha256??"","^[a-f0-9]{64}$"),"source path/hash invalid");
@@ -103,7 +105,7 @@ namespace GDAI.Bridge.Editor.LayerA
                 if(!string.IsNullOrEmpty(o.role)&&o.role!="system") {
                     Req(roles!=null&&roles.Any(r=>(string)r["role"]==o.role&&(string)r["entity_id"]==o.entity_id),"gated role entity missing");
                     Req(assets!=null&&assets.Any(a=>(string)a["entity_id"]==o.entity_id),"semantic adopted asset missing");
-                    Req(o.position=="placement","semantic position must be persisted");
+                    Req(o.position=="placement"||(o.kind=="prefab"&&o.role=="enemy"&&o.position=="neutral"),"semantic position requires persisted placement except neutral enemy prefab origin");
                 }
                 if(o.position=="placement")Req(placements!=null&&placements.Count(a=>(string)a["entity_id"]==o.entity_id)==1,"placement identity missing/ambiguous");
                 Req(o.components!=null&&o.components.Count>0&&o.components.Count<=32,"component intent required");
@@ -119,14 +121,14 @@ namespace GDAI.Bridge.Editor.LayerA
                         Req(sensitive||f.disposition!="preserve_external","opaque preservation is sensitive-only");
                         if(f.disposition=="source_default"||f.disposition=="optional_null")Req(!string.IsNullOrWhiteSpace(f.rationale),"field rationale missing");
                         if(f.disposition=="source_default"||f.disposition=="value")Req(f.value!=null&&BoundedValue(f.value),"explicit typed value/default missing");
-                        if(f.disposition=="reference")Req(new[]{"object","component","transform","prefab","asset","config"}.Contains(f.reference_kind)&&Id(f.target_id),"reference intent missing");
+                        if(f.disposition=="reference")Req(new[]{"object","component","transform","prefab","asset","config"}.Contains(f.reference_kind)&&(f.reference_kind=="asset"?AcceptedAsset(f.target_id):Id(f.target_id)),"reference intent missing");
                     }
                 }
             }
             void Reference(Host o,string kind,string id,string component)
             {
                 Req(new[]{"object","component","transform","prefab","asset","config"}.Contains(kind),"unknown reference kind");
-                if(kind=="asset")Req(assets!=null&&assets.Count(a=>(string)a["asset_id"]==id)==1,"adopted asset reference missing/ambiguous");
+                if(kind=="asset")Req(AcceptedAsset(id),"adopted asset reference missing/ambiguous");
                 else {
                     var target=(p.objects??new List<Host>()).Where(t=>t.id==id).ToList();Req(target.Count==1,"owned reference missing/ambiguous");
                     if(target.Count!=1)return;

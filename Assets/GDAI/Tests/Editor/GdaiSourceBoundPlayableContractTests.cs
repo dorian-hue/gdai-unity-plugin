@@ -415,3 +415,103 @@ namespace GDAI.Bridge.Editor.Tests
         }
     }
 }
+
+namespace GDAI.Bridge.Editor.Tests
+{
+    // Generic contract tests; no project-specific source or accepted product configuration.
+    public class GdaiDynamicEnemyPrefabContractTests
+    {
+        public static GdaiPlayableContract DynamicEnemyPrefabFixture()
+        {
+            var c=JsonConvert.DeserializeObject<GdaiPlayableContract>(@"{""schema_version"":""gdai.unity.playable_contract.v1"",""contract_revision"":4,""profile_id"":""unity.source_bound_demo.v1"",""canonical_scene"":{""path"":""Assets/Scenes/Main.unity"",""add_to_build_settings"":true},""source_bound_context"":{""accepted_designs"":[{""module_id"":""generic"",""accepted_design_identity"":""aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"",""design"":{""content"":""generic accepted design""},""source_path"":""Assets/GDAI_Generated/GameIntegrationController.cs""}],""arena"":{""width"":960,""height"":540,""coordinate_space"":""canvas_top_left_y_down_px""},""roles"":[{""role"":""player"",""entity_id"":""pilot-entity""},{""role"":""enemy"",""entity_id"":""enemy-entity""}],""placements"":[{""entity_id"":""pilot-entity"",""x"":580,""y"":170,""scale"":2}],""assets"":[{""asset_id"":""pilot-art"",""entity_id"":""pilot-entity"",""unity_path"":""Assets/GDAI_Generated/Art/Pilot.png""},{""asset_id"":""enemy-art"",""entity_id"":""enemy-entity"",""unity_path"":""Assets/GDAI_Generated/Art/Enemy.png""}]},""source_bound_plan"":{""revision"":2,""context_sha256"":""aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"",""sources"":[{""path"":""Assets/GDAI_Generated/GameIntegrationController.cs"",""sha256"":""bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""}],""objects"":[{""id"":""pilot"",""name"":""Pilot"",""kind"":""scene"",""role"":""player"",""entity_id"":""pilot-entity"",""position"":""placement"",""components"":[{""id"":""pilot-sprite"",""type"":""UnityEngine.SpriteRenderer"",""source_path"":""builtin"",""native_defaults"":true,""fields"":[{""path"":""sprite"",""disposition"":""reference"",""reference_kind"":""asset"",""target_id"":""pilot-art""}]}]},{""id"":""enemy"",""name"":""Enemy"",""kind"":""prefab"",""role"":""enemy"",""entity_id"":""enemy-entity"",""position"":""neutral"",""asset_path"":""Assets/GDAI_Project/Generated/Enemy.prefab"",""components"":[{""id"":""enemy-sprite"",""type"":""UnityEngine.SpriteRenderer"",""source_path"":""builtin"",""native_defaults"":true,""fields"":[{""path"":""sprite"",""disposition"":""reference"",""reference_kind"":""asset"",""target_id"":""enemy-art""}]}]},{""id"":""manager"",""name"":""Manager"",""kind"":""scene"",""role"":""system"",""position"":""neutral"",""components"":[{""id"":""controller"",""type"":""GameIntegrationController"",""source_path"":""Assets/GDAI_Generated/GameIntegrationController.cs"",""native_defaults"":false,""fields"":[{""path"":""enemyPrefab"",""disposition"":""reference"",""reference_kind"":""prefab"",""target_id"":""enemy""}]}]}],""type_dispositions"":[{""type"":""GameIntegrationController"",""source_path"":""Assets/GDAI_Generated/GameIntegrationController.cs"",""disposition"":""hosted""}],""unresolved"":[]},""source_bound_obligations"":[{""type"":""GameIntegrationController"",""source_path"":""Assets/GDAI_Generated/GameIntegrationController.cs"",""kind"":""class"",""hosting"":""component"",""abstract"":false,""fields"":[{""path"":""enemyPrefab"",""type"":""UnityEngine.GameObject"",""required_reference"":true}]}]}");
+            Rebind(c);return c;
+        }
+        private static void Rebind(GdaiPlayableContract c) {
+            c.source_bound_context_json=c.source_bound_context.ToString(Formatting.None);
+            c.source_bound_plan.context_sha256=GdaiSourceBoundPlayablePlan.Hash(System.Text.Encoding.UTF8.GetBytes(c.source_bound_context_json));
+        }
+        [Test] public void DynamicEnemyPrefab_AcceptsWithoutPlacementAndRetainsPlayerGeometry() {
+            var c=DynamicEnemyPrefabFixture();
+            Assert.IsEmpty(GdaiSourceBoundPlayablePlan.Validate(c));
+            var writes=GdaiSourceBoundPlayableComposer.ImplicitGeometryWrites(c);
+            Assert.IsFalse(writes.Any(w=>w.host_id=="enemy"));
+            var position=writes.Single(w=>w.host_id=="pilot"&&w.field=="position");
+            Assert.AreEqual(1f,(float)position.expected["x"]);Assert.AreEqual(1f,(float)position.expected["y"]);
+            Assert.AreEqual(2f,(float)writes.Single(w=>w.host_id=="pilot"&&w.field=="localScale").expected["x"]);
+            Assert.AreEqual(1,((JArray)c.source_bound_context["placements"]).Count);
+        }
+        [TestCase("scene_enemy")][TestCase("scene_player")][TestCase("prefab_player")]
+        [TestCase("missing_role")][TestCase("wrong_role")][TestCase("wrong_entity")]
+        [TestCase("missing_asset")][TestCase("missing_placement")][TestCase("duplicate_placement")]
+        [TestCase("unowned_path")][TestCase("wrong_reference")][TestCase("wrong_host")]
+        [TestCase("unconsumed_prefab")]
+        public void DynamicEnemyPrefab_RejectsInvalidSemantics(string change) {
+            var c=DynamicEnemyPrefabFixture();var enemy=c.source_bound_plan.objects.Single(o=>o.id=="enemy");var pilot=c.source_bound_plan.objects.Single(o=>o.id=="pilot");
+            var use=c.source_bound_plan.objects.Single(o=>o.id=="manager").components[0].fields[0];
+            switch(change) {
+                case "scene_enemy":enemy.kind="scene";break;
+                case "scene_player":pilot.position="neutral";break;
+                case "prefab_player":pilot.kind="prefab";pilot.position="neutral";pilot.asset_path="Assets/GDAI_Project/Generated/Pilot.prefab";break;
+                case "missing_role":enemy.role=null;break;
+                case "wrong_role":enemy.role="npc";break;
+                case "wrong_entity":enemy.entity_id="unknown";break;
+                case "missing_asset":((JArray)c.source_bound_context["assets"]).RemoveAt(1);break;
+                case "missing_placement":enemy.position="placement";break;
+                case "duplicate_placement":((JArray)c.source_bound_context["placements"]).Add(c.source_bound_context["placements"][0].DeepClone());break;
+                case "unowned_path":enemy.asset_path="Assets/External/Enemy.prefab";break;
+                case "wrong_reference":use.target_id="missing";break;
+                case "wrong_host":enemy.kind="config";enemy.asset_path="Assets/GDAI_Project/Generated/Enemy.asset";break;
+                case "unconsumed_prefab":use.reference_kind="object";break;
+                default:throw new InvalidOperationException(change);
+            }
+            Rebind(c);Assert.IsNotEmpty(GdaiSourceBoundPlayablePlan.Validate(c),change);
+        }
+        [Test] public void DynamicEnemyPrefab_ExplicitPlacementStillRequiresOnePersistedMatch() {
+            var c=DynamicEnemyPrefabFixture();var enemy=c.source_bound_plan.objects.Single(o=>o.id=="enemy");enemy.position="placement";
+            Assert.IsNotEmpty(GdaiSourceBoundPlayablePlan.Validate(c));
+            var placement=JObject.Parse(@"{'entity_id':'enemy-entity','x':25,'y':50,'scale':1}");
+            ((JArray)c.source_bound_context["placements"]).Add(placement);Rebind(c);
+            Assert.IsEmpty(GdaiSourceBoundPlayablePlan.Validate(c));
+            ((JArray)c.source_bound_context["placements"]).Add(placement.DeepClone());Rebind(c);
+            Assert.IsNotEmpty(GdaiSourceBoundPlayablePlan.Validate(c));
+        }
+        [TestCase("12345678-1234-4234-8234-123456789abc",false)]
+        [TestCase("12345678-1234-4234-8234-123456789abc",true)]
+        [TestCase("abcdefab-1234-4234-8234-123456789abc",false)]
+        [TestCase("abcdefab-1234-4234-8234-123456789abc",true)]
+        [TestCase("pilot-art",false)][TestCase("pilot-art",true)]
+        public void AssetIdentity_ExactAdoptedStorageIdentityAccepted(string id,bool nested) {
+            var c=DynamicEnemyPrefabFixture();
+            c.source_bound_context["assets"][0]["asset_id"]=id;
+            var f=c.source_bound_plan.objects.Single(o=>o.id=="pilot").components[0].fields[0];
+            f.target_id=id;
+            if(nested) {f.disposition="value";f.value=new JObject {["reference_kind"]="asset",["target_id"]=id};f.reference_kind=null;f.target_id=null;}
+            Rebind(c);Assert.IsEmpty(GdaiSourceBoundPlayablePlan.Validate(c));
+        }
+        [TestCase("unknown",false)][TestCase("unknown",true)]
+        [TestCase("case",false)][TestCase("case",true)]
+        [TestCase("duplicate",false)][TestCase("duplicate",true)]
+        [TestCase("empty",false)][TestCase("empty",true)]
+        public void AssetIdentity_RejectsMissingWrongOrAmbiguousMembership(string change,bool nested) {
+            const string id="12345678-1234-4234-8234-123456789abc";
+            var c=DynamicEnemyPrefabFixture();var assets=(JArray)c.source_bound_context["assets"];
+            assets[0]["asset_id"]=id;
+            var f=c.source_bound_plan.objects.Single(o=>o.id=="pilot").components[0].fields[0];
+            f.target_id=change=="unknown"?"92345678-1234-4234-8234-123456789abc":change=="case"?id.ToUpperInvariant():change=="empty"?"":id;
+            if(change=="duplicate")assets.Add(assets[0].DeepClone());
+            if(nested){f.disposition="value";f.value=new JObject {["reference_kind"]="asset",["target_id"]=f.target_id};f.reference_kind=null;f.target_id=null;}
+            Rebind(c);Assert.IsNotEmpty(GdaiSourceBoundPlayablePlan.Validate(c),change);
+        }
+        [TestCase("object")][TestCase("component")][TestCase("transform")][TestCase("prefab")][TestCase("config")]
+        public void AssetIdentity_DoesNotWidenOwnedReferenceNames(string kind) {
+            var c=DynamicEnemyPrefabFixture();var enemy=c.source_bound_plan.objects.Single(o=>o.id=="enemy");enemy.id="123owned";
+            var f=c.source_bound_plan.objects.Single(o=>o.id=="manager").components[0].fields[0];f.reference_kind=kind;f.target_id=enemy.id;f.target_component=enemy.components[0].id;
+            var errors=GdaiSourceBoundPlayablePlan.Validate(c);
+            Assert.Contains("object id/name duplicate or invalid",errors);Assert.Contains("reference intent missing",errors);
+        }
+        [Test] public void AssetIdentity_DoesNotWidenComponentNames() {
+            var c=DynamicEnemyPrefabFixture();c.source_bound_plan.objects[0].components[0].id="123component";
+            Assert.Contains("component identity/source invalid",GdaiSourceBoundPlayablePlan.Validate(c));
+        }
+    }
+}
