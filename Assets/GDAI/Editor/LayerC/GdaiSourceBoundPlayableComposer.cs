@@ -242,16 +242,34 @@ SceneRoots:
             }
             throw new InvalidOperationException("serialized field reflection missing: "+name);
         }
+        private static SerializedProperty ResolveProperty(SerializedObject serialized,GdaiSourceBoundPlayablePlan.ComponentSpec component,string path)
+        {
+            if(component.source_path=="builtin"&&component.type=="UnityEngine.Camera"&&serialized.targetObject.GetType()==typeof(Camera)&&path=="orthographicSize") {
+                var mapped=serialized.FindProperty("orthographic size");
+                if(mapped==null||mapped.propertyType!=SerializedPropertyType.Float)throw new InvalidOperationException("Camera orthographicSize serialized Float unavailable");
+                return mapped;
+            }
+            return serialized.FindProperty(path);
+        }
+        private static void RequireDistinctPropertyTargets(SerializedObject serialized,GdaiSourceBoundPlayablePlan.ComponentSpec component)
+        {
+            var paths=new HashSet<string>(StringComparer.Ordinal);
+            foreach(var field in component.fields) {
+                var property=ResolveProperty(serialized,component,field.path);
+                if(property!=null&&!paths.Add(property.propertyPath))throw new InvalidOperationException("duplicate serialized field target: "+field.path);
+            }
+        }
         public static void CheckCoverage(Object target,GdaiSourceBoundPlayablePlan.ComponentSpec c,int revision=1)
         {
             GdaiSourceBoundPlayablePlan.RequireSafeFields(c.fields,revision);
             if(target==null)throw new InvalidOperationException("planned component not persisted: "+c.type);
             if(c.source_path!="builtin"&&revision==1&&SerializedTypeFields(target.GetType()).Any(f=>Sensitive(f.Name)))throw new InvalidOperationException("sensitive serialized configuration unsupported");
             using(var so=new SerializedObject(target)) {
+                RequireDistinctPropertyTargets(so,c);
                 var actual=SerializedFields(so).ToArray();var planned=c.fields.Select(f=>f.path).ToArray();
                 if(c.source_path!="builtin"&&(actual.Length!=planned.Length||!new HashSet<string>(actual).SetEquals(planned)))throw new InvalidOperationException("complete serialized field coverage mismatch: "+c.type);
                 foreach(var f in c.fields) {
-                    var p=so.FindProperty(f.path);
+                    var p=ResolveProperty(so,c,f.path);
                     if(p==null||p.propertyType==SerializedPropertyType.ManagedReference)throw new InvalidOperationException("unsupported/missing serialized field: "+f.path);
                     if(c.source_path!="builtin") {
                         var actualField=Field(target.GetType(),f.path);if(revision==1)RequireBaselineShape(actualField.FieldType);else RequireRevision2Shape(actualField.FieldType,new HashSet<Type>());
@@ -885,7 +903,7 @@ SceneRoots:
                                 if(baseline.Count!=1)throw new InvalidOperationException("prior rollback baseline missing/ambiguous: "+host.id+"/"+component.id+"/"+field.path);
                                 if(baseline[0].policy=="preserve_external") {if(baseline[0].state!=null)throw new InvalidOperationException("opaque rollback baseline contains state: "+field.path);continue;}
                                 if(baseline[0].state==null)throw new InvalidOperationException("prior rollback state missing: "+field.path);
-                                var property=serialized.FindProperty(field.path)??throw new InvalidOperationException("prior rollback field absent: "+field.path);
+                                var property=ResolveProperty(serialized,component,field.path)??throw new InvalidOperationException("prior rollback field absent: "+field.path);
                                 var fieldType=component.source_path=="builtin"?NativeType(property):Field(instance.GetType(),field.path).FieldType;
                                 var actualState=mergePlan?.RollbackState(host.id,component.id,field.path);
                                 if(actualState!=null)RestoreFieldState(property,actualState,contents,host.kind=="prefab"?host.asset_path:null);
@@ -929,12 +947,12 @@ SceneRoots:
                     var baseline=prior.source_bound_field_baselines.Where(b=>b.host_id==host.id&&b.component_id==comp.id&&b.field==field.path&&b.type==comp.type&&b.source_path==comp.source_path).ToList();
                     if(baseline.Count!=1)throw new InvalidOperationException("prior field baseline missing/ambiguous: "+host.id+"/"+comp.id+"/"+field.path);
                     if(field.disposition=="preserve_external") {if(baseline[0].policy!="preserve_external"||baseline[0].state!=null)throw new InvalidOperationException("opaque preservation baseline mismatch: "+host.id+"/"+comp.id+"/"+field.path);continue;}
-                    var property=so.FindProperty(field.path)??throw new InvalidOperationException("prior serialized field absent: "+field.path);
+                    var property=ResolveProperty(so,comp,field.path)??throw new InvalidOperationException("prior serialized field absent: "+field.path);
                     var fieldType=comp.source_path=="builtin"?NativeType(property):Field(type,field.path).FieldType;
                     if(c.source_bound_plan.revision>=2&&DeclaredNativeEqualityShape(fieldType,new HashSet<Type>())) {
                         if(baseline[0].policy!="declared_expected"||baseline[0].state==null)throw new InvalidOperationException("declared baseline missing: "+host.id+"/"+comp.id+"/"+field.path);
                         var priorField=new GdaiSourceBoundPlayablePlan.Field {path=field.path,disposition="value",value=baseline[0].state};
-                        var matchesPrior=MatchesDeclaredProperty(instance,property,fieldType,priorField,c,existing,host,target);var matchesDeclaredNew=MatchesDeclaredProperty(instance,property,fieldType,field,c,existing,host,target);
+                        var matchesPrior=MatchesDeclaredProperty(instance,comp,property,fieldType,priorField,c,existing,host,target);var matchesDeclaredNew=MatchesDeclaredProperty(instance,comp,property,fieldType,field,c,existing,host,target);
                         var creatorUnchanged=JToken.DeepEquals(baseline[0].state,field.value);
                         var declaredDecision=matchesDeclaredNew?FieldUpdateDecision.AlreadyApplied:creatorUnchanged?FieldUpdateDecision.PreserveUserEdit:matchesPrior?FieldUpdateDecision.CreatorUpdate:FieldUpdateDecision.Conflict;
                         if(declaredDecision==FieldUpdateDecision.Conflict)throw new InvalidOperationException("user field conflict before mutation: "+host.id+"/"+comp.id+"/"+field.path);
@@ -958,7 +976,7 @@ SceneRoots:
                 else {shell=new GameObject("GDAI_ExpectedFieldState");shell.SetActive(false);prototype=shell.AddComponent(type);}
                 var single=new GdaiSourceBoundPlayablePlan.ComponentSpec {id=comp.id,source_path=comp.source_path,type=comp.type,fields=new List<GdaiSourceBoundPlayablePlan.Field>{field}};
                 BindFieldsCore(prototype,single,c,objects,host,self,true,true,null);
-                using(var serialized=new SerializedObject(prototype)){var property=serialized.FindProperty(field.path)??throw new InvalidOperationException("expected field absent: "+field.path);return FieldState(property);}
+                using(var serialized=new SerializedObject(prototype)){var property=ResolveProperty(serialized,comp,field.path)??throw new InvalidOperationException("expected field absent: "+field.path);return FieldState(property);}
             } finally {if(shell!=null)Object.DestroyImmediate(shell);else if(prototype!=null)Object.DestroyImmediate(prototype);}
         }
         private static void VerifyFreshDefault(Type type,GdaiSourceBoundPlayablePlan.ComponentSpec comp,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host)
@@ -979,7 +997,7 @@ SceneRoots:
                 var target=objects[host.id];var instance=target is GameObject go?go.GetComponent(Resolve(comp,host.kind)):target;
                 using(var so=new SerializedObject(instance))foreach(var field in comp.fields) {
                     if(field.disposition=="preserve_external") {result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,policy="preserve_external"});continue;}
-                    var property=so.FindProperty(field.path);if(property==null)throw new InvalidOperationException("missing baseline field: "+field.path);
+                    var property=ResolveProperty(so,comp,field.path);if(property==null)throw new InvalidOperationException("missing baseline field: "+field.path);
                     var fieldType=comp.source_path=="builtin"?NativeType(property):Field(instance.GetType(),field.path).FieldType;
                     if(c.source_bound_plan.revision>=2&&DeclaredNativeEqualityShape(fieldType,new HashSet<Type>()))result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,policy="declared_expected",state=field.value.DeepClone()});
                     else {if(property.propertyType==SerializedPropertyType.String)throw new InvalidOperationException("missing/unsupported baseline field: "+field.path);result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,state=ExpectedFieldState(instance.GetType(),comp,field,c,objects,host,target)});}
@@ -1019,15 +1037,16 @@ SceneRoots:
             if(instance==null)throw new InvalidOperationException("planned component missing");
             if(comp.source_path!="builtin"&&revision==1&&SerializedTypeFields(instance.GetType()).Any(f=>Sensitive(f.Name)))throw new InvalidOperationException("sensitive serialized configuration unsupported");
             using(var so=new SerializedObject(instance)) {
+                RequireDistinctPropertyTargets(so,comp);
                 foreach(var f in comp.fields) {
                     if(f.disposition=="preserve_external")continue;
-                    var property=so.FindProperty(f.path);if(property==null)throw new InvalidOperationException("field missing: "+f.path);
+                    var property=ResolveProperty(so,comp,f.path);if(property==null)throw new InvalidOperationException("field missing: "+f.path);
                     var decision=mergePlan?.Decision(host.id,comp.id,f.path)??FieldUpdateDecision.CreatorUpdate;
                     if(mergePlan!=null&&write&&!ShouldApplyFieldUpdate(decision)){if(decision==FieldUpdateDecision.PreserveUserEdit)mergePlan.VerifyRetained(host.id,comp.id,f.path,property,host.kind=="prefab"?self as GameObject:null,host.kind=="prefab"?host.asset_path:null);continue;}
                     if(mergePlan!=null&&!write&&decision==FieldUpdateDecision.PreserveUserEdit){mergePlan.VerifyRetained(host.id,comp.id,f.path,property,host.kind=="prefab"?self as GameObject:null,host.kind=="prefab"?host.asset_path:null);continue;}
                     var expectedType=comp.source_path=="builtin"?NativeType(property):Field(instance.GetType(),f.path).FieldType;
                     if(mergePlan!=null&&write)mergePlan.MarkWriteStarted(host.id,comp.id,f.path);
-                    if(!write&&revision>=2&&DeclaredNativeEqualityShape(expectedType,new HashSet<Type>())) {if(!MatchesDeclaredProperty(instance,property,expectedType,f,c,objects,host,self))throw new InvalidOperationException("declared text/curve readback mismatch: "+f.path);continue;}
+                    if(!write&&revision>=2&&DeclaredNativeEqualityShape(expectedType,new HashSet<Type>())) {if(!MatchesDeclaredProperty(instance,comp,property,expectedType,f,c,objects,host,self))throw new InvalidOperationException("declared text/curve readback mismatch: "+f.path);continue;}
                     if(f.disposition=="reference") {
                         var target=Reference(f.reference_kind,f.target_id,f.target_component,c,objects,host,self);
                         ObjectReference(property,expectedType,target,write);
@@ -1049,12 +1068,12 @@ SceneRoots:
             if(type.IsPrimitive||type.IsEnum||typeof(Object).IsAssignableFrom(type)||type==typeof(Bounds)||type==typeof(Vector2)||type==typeof(Vector3)||type==typeof(Vector4)||type==typeof(LayerMask))return false;
             if(!type.IsSerializable||seen.Contains(type))return false;var next=new HashSet<Type>(seen){type};return SerializedTypeFields(type,2).Any(f=>DeclaredNativeEqualityShape(f.FieldType,next));
         }
-        private static bool MatchesDeclaredProperty(Object instance,SerializedProperty live,Type type,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self) {
+        private static bool MatchesDeclaredProperty(Object instance,GdaiSourceBoundPlayablePlan.ComponentSpec comp,SerializedProperty live,Type type,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self) {
             GameObject shell=null;Object prototype=null;
             try {
                 if(instance is ScriptableObject)prototype=ScriptableObject.CreateInstance(instance.GetType());
                 else {shell=new GameObject("GDAI_DeclaredComparison");shell.SetActive(false);prototype=shell.AddComponent(instance.GetType());}
-                using(var expected=new SerializedObject(prototype)) {var property=expected.FindProperty(field.path)??throw new InvalidOperationException("declared comparison field missing: "+field.path);Value(property,type,field.value,c,objects,host,self,true);return SerializedProperty.DataEquals(live,property);}
+                using(var expected=new SerializedObject(prototype)) {var property=ResolveProperty(expected,comp,field.path)??throw new InvalidOperationException("declared comparison field missing: "+field.path);Value(property,type,field.value,c,objects,host,self,true);return SerializedProperty.DataEquals(live,property);}
             }finally {if(shell!=null)Object.DestroyImmediate(shell);else if(prototype!=null)Object.DestroyImmediate(prototype);}
         }
         private static Type NativeType(SerializedProperty p)
