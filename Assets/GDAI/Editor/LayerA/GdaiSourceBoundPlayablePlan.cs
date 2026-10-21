@@ -111,11 +111,14 @@ namespace GDAI.Bridge.Editor.LayerA
                 if(o.position=="placement")Req(placements!=null&&placements.Count(a=>(string)a["entity_id"]==o.entity_id)==1,"placement identity missing/ambiguous");
                 Req(o.components!=null&&o.components.Count>0&&o.components.Count<=32,"component intent required");
                 if(o.kind=="config")Req(o.components?.Count==1,"config requires one ScriptableObject");
+                var componentTypes=new HashSet<Type>();
                 foreach(var c in o.components??new List<ComponentSpec>()) {
+                    var identity=c.source_path=="builtin"?Builtin(c.type):CompiledType(c.type);
+                    if(identity!=null)Req(componentTypes.Add(identity),"indistinguishable same-type component declarations: "+o.id+"/"+c.type);
                     Req(Id(c.id)&&comps.Add(c.id)&&System.Text.RegularExpressions.Regex.IsMatch(c.type??"","^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$")&&(c.source_path=="builtin" ? c.native_defaults && Builtin(c.type)!=null && o.kind!="config" : paths.Contains(c.source_path??"")),"component identity/source invalid");
                     Req(c.fields!=null,"complete field dispositions required");var fields=new HashSet<string>();
                     foreach(var f in c.fields??new List<Field>()) {
-                        Req(System.Text.RegularExpressions.Regex.IsMatch(f.path??"","^[A-Za-z_][A-Za-z0-9_]*$")&&fields.Add(f.path),"field path duplicate/invalid");
+                        Req(ValidFieldPath(c,f.path)&&fields.Add(f.path),"field path duplicate/invalid");
                         var sensitive=SensitiveField(f.path);
                         if(sensitive)Req(p.revision>=2&&f.disposition=="preserve_external"&&!string.IsNullOrWhiteSpace(f.rationale)&&!f.ValueSpecified&&f.target_id==null&&f.target_component==null&&f.reference_kind==null,"sensitive configuration requires payload-free opaque preservation");
                         else Req(new[]{"source_default","optional_null","value","reference"}.Contains(f.disposition),"unresolved field disposition");
@@ -255,6 +258,8 @@ namespace GDAI.Bridge.Editor.LayerA
             if(t is JObject o)return o.Count<=64&&o.Properties().All(p=>!SensitiveField(p.Name)&&System.Text.RegularExpressions.Regex.IsMatch(p.Name,"^[A-Za-z_][A-Za-z0-9_]*$")&&BoundedValue(p.Value,depth+1));
             return t.Type==JTokenType.Null||t.Type==JTokenType.Boolean||t.Type==JTokenType.Integer||t.Type==JTokenType.Float||t.Type==JTokenType.String&&((string)t).Length<=4096&&!System.Text.RegularExpressions.Regex.IsMatch((string)t,"-----BEGIN|service_role|\\beyJ\\w+\\.\\w+\\.\\w+");
         }
+        public static bool ValidFieldPath(ComponentSpec c,string path) =>
+            System.Text.RegularExpressions.Regex.IsMatch(path??"",c.source_path=="builtin"&&c.type=="UnityEngine.ParticleSystem"?"^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$":"^[A-Za-z_][A-Za-z0-9_]*$");
         public static Type Builtin(string name)
         {
             var types=new[]{typeof(Camera),typeof(SpriteRenderer),typeof(Rigidbody2D),typeof(BoxCollider2D),typeof(CircleCollider2D),typeof(CapsuleCollider2D),typeof(PolygonCollider2D),typeof(AudioListener),typeof(AudioSource),typeof(ParticleSystem),typeof(UnityEngine.Playables.PlayableDirector)};

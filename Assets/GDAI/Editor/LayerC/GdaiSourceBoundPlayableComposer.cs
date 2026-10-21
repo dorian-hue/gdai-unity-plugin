@@ -149,7 +149,7 @@ SceneRoots:
   m_Roots: []
 ";
         private sealed class MarkerRollbackState { public bool present; public string profile,snapshot,role; }
-        private sealed class HostRollbackState { public bool active,aspectLock; public MarkerRollbackState marker; public HashSet<string> components=new HashSet<string>(); public List<Action<GameObject>> geometry=new List<Action<GameObject>>(); }
+        private sealed class HostRollbackState { public bool active,aspectLock; public Material[] particleMaterials; public MarkerRollbackState marker; public HashSet<string> components=new HashSet<string>(); public List<Action<GameObject>> geometry=new List<Action<GameObject>>(); }
         private sealed class OwnedRollbackPlan { public GdaiPlayableAssetsManifest prior; public Dictionary<string,HostRollbackState> hosts=new Dictionary<string,HostRollbackState>(); }
         private sealed class RetainedFieldSnapshot : IDisposable
         {
@@ -194,6 +194,8 @@ SceneRoots:
         private sealed class FieldMergePlan : IDisposable
         {
             public readonly HashSet<string> updateComponents=new HashSet<string>();
+            public readonly Dictionary<string,Material[]> particleReadback=new Dictionary<string,Material[]>();
+            public readonly HashSet<string> particleWrites=new HashSet<string>();
             private readonly Dictionary<string,FieldUpdateDecision> decisions=new Dictionary<string,FieldUpdateDecision>();
             private readonly Dictionary<string,RetainedFieldSnapshot> retained=new Dictionary<string,RetainedFieldSnapshot>();
             private readonly Dictionary<string,JToken> rollbackStates=new Dictionary<string,JToken>();
@@ -271,6 +273,7 @@ SceneRoots:
                 foreach(var f in c.fields) {
                     var p=ResolveProperty(so,c,f.path);
                     if(p==null||p.propertyType==SerializedPropertyType.ManagedReference)throw new InvalidOperationException("unsupported/missing serialized field: "+f.path);
+                    RequireParticleScalar(c,f,p);
                     if(c.source_path!="builtin") {
                         var actualField=Field(target.GetType(),f.path);if(revision==1)RequireBaselineShape(actualField.FieldType);else RequireRevision2Shape(actualField.FieldType,new HashSet<Type>());
                         if(f.disposition!="preserve_external")RuntimeShape(p,actualField.FieldType,f.disposition=="reference"?JToken.FromObject(f):f.value,f.disposition,new HashSet<Type>(),f.path,revision);
@@ -508,6 +511,8 @@ SceneRoots:
         public static Dictionary<string,Type> AdmitTransientComposition(GdaiPlayableContract c)
         {
             var types=c.source_bound_plan.objects.SelectMany(o=>o.components.Select(comp=>new {comp.id,type=Resolve(comp,o.kind)})).ToDictionary(x=>x.id,x=>x.type);
+            foreach(var host in c.source_bound_plan.objects)
+                if(host.components.GroupBy(comp=>types[comp.id]).Any(group=>group.Count()>1))throw new InvalidOperationException("indistinguishable same-type component declarations: "+host.id);
             VerifyCompiledObligations(c);
             var preview=default(UnityEngine.SceneManagement.Scene);var stagedObjects=new Dictionary<string,Object>();var stagedConfigs=new List<ScriptableObject>();
             try {
@@ -518,6 +523,7 @@ SceneRoots:
                     }else {
                         var go=new GameObject("GDAI_Admission_"+host.id);go.SetActive(false);UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(go,preview);
                         foreach(var component in host.components)go.AddComponent(types[component.id]);
+                        ApplyParticleDefaults(go,host,null,true);
                         ApplyGeometry(go,ImplicitGeometryWrites(c).Where(w=>w.host_id==host.id));stagedObjects.Add(host.id,go);
                     }
                 }
@@ -533,6 +539,43 @@ SceneRoots:
                 if(preview.IsValid())EditorSceneManager.ClosePreviewScene(preview);
             }
             return types;
+        }
+        private static GdaiSourceBoundPlayablePlan.ComponentSpec ParticleSpec(GdaiSourceBoundPlayablePlan.Host host) =>
+            host.components.SingleOrDefault(comp=>comp.source_path=="builtin"&&comp.type==typeof(ParticleSystem).FullName&&comp.native_defaults);
+        private static ParticleSystemRenderer ParticleRenderer(GameObject go) {
+            var renderers=go.GetComponents<ParticleSystemRenderer>();
+            if(go.GetComponents<ParticleSystem>().Length!=1||renderers.Length!=1)throw new InvalidOperationException("particle renderer missing/ambiguous: "+go.name);
+            return renderers[0];
+        }
+        private static Material PipelineParticleMaterial() {
+            var pipeline=UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            var material=pipeline!=null?pipeline.defaultParticleMaterial:null;
+            if(material==null||material.shader==null||!material.shader.isSupported||!EditorUtility.IsPersistent(material))throw new InvalidOperationException("active pipeline particle creation material unavailable");
+            return material;
+        }
+        private static JToken MaterialState(Material[] materials) => new JArray(materials.Select(material=>new JObject { ["kind"]="object",["identity"]=StableObjectIdentity(material) }));
+        private static void AdmitParticleDefaults(GdaiPlayableContract c,GdaiPlayableAssetsManifest prior,Dictionary<string,Object> existing,FieldMergePlan plan) {
+            foreach(var host in c.source_bound_plan.objects.Where(h=>ParticleSpec(h)!=null)) {
+                var expected=new[]{PipelineParticleMaterial()};
+                if(!existing.TryGetValue(host.id,out var target)) {plan.particleReadback.Add(host.id,expected);plan.particleWrites.Add(host.id);continue;}
+                var live=ParticleRenderer((GameObject)target).sharedMaterials;
+                var spec=ParticleSpec(host);
+                var baselines=prior.source_bound_field_baselines.Where(b=>b.host_id==host.id&&b.component_id==spec.id&&b.source_path=="__native_defaults"&&b.type==typeof(ParticleSystemRenderer).FullName&&b.field=="m_Materials"&&b.policy=="pipeline_creation_default").ToList();
+                if(baselines.Count!=1||baselines[0].state==null)throw new InvalidOperationException("particle material legacy baseline missing/ambiguous; explicit migration required: "+host.id);
+                var decision=DecideFieldUpdate(baselines[0].state,MaterialState(live),MaterialState(expected),true);
+                if(decision==FieldUpdateDecision.Conflict||decision==FieldUpdateDecision.MissingBaseline)throw new InvalidOperationException("particle material conflict before mutation: "+host.id);
+                plan.particleReadback.Add(host.id,decision==FieldUpdateDecision.PreserveUserEdit?live.ToArray():expected);
+                if(decision==FieldUpdateDecision.CreatorUpdate)plan.particleWrites.Add(host.id);
+            }
+        }
+        private static void ApplyParticleDefaults(GameObject go,GdaiSourceBoundPlayablePlan.Host host,FieldMergePlan plan,bool write) {
+            if(ParticleSpec(host)==null)return;
+            var renderer=ParticleRenderer(go);
+            Material[] expected;
+            if(plan==null)expected=new[]{PipelineParticleMaterial()};
+            else if(!plan.particleReadback.TryGetValue(host.id,out expected))throw new InvalidOperationException("particle material write not admitted: "+host.id);
+            if(write&&(plan==null||plan.particleWrites.Contains(host.id))) {renderer.sharedMaterials=expected;EditorUtility.SetDirty(renderer);}
+            if(!JToken.DeepEquals(MaterialState(renderer.sharedMaterials),MaterialState(expected)))throw new InvalidOperationException("particle material saved readback mismatch: "+host.id);
         }
         private static void RequireOwnedOutputPathAvailable(string assetPath)
         {
@@ -606,6 +649,7 @@ SceneRoots:
                 if(objects!=null)Check("implicit_geometry",()=>VerifyImplicitGeometry(c,objects,requireActive));
                 if(objects!=null)foreach(var host in c.source_bound_plan.objects) {
                     Check("host:"+host.id,()=>{if(host.kind!="scene")return;var go=(GameObject)objects[host.id];var marker=go.GetComponent<GdaiGeneratedPlayableMarker>();if(marker==null||marker.profileId!=c.profile_id||marker.snapshotId!=snapshot||marker.ownedRole!=host.id)throw new InvalidOperationException("host ownership mismatch");if(requireActive&&!go.activeSelf||!requireActive&&go.activeSelf)throw new InvalidOperationException("inactive/activation ordering mismatch");});
+                    Check("particle_defaults:"+host.id,()=>{if(objects[host.id] is GameObject go)ApplyParticleDefaults(go,host,mergePlan,false);});
                     foreach(var comp in host.components)Check("fields:"+comp.id,()=>{GameObject contents=null;Object target=objects[host.id];try {if(host.kind=="prefab"){contents=PrefabUtility.LoadPrefabContents(host.asset_path);target=contents;if(!contents.activeSelf)throw new InvalidOperationException("bound prefab must be activated for runtime instantiation");}var type=Resolve(comp,host.kind);var instance=target is GameObject go?go.GetComponent(type):target;if(instance==null||instance.GetType()!=type)throw new InvalidOperationException("saved component type missing");CheckCoverage(instance,comp,c.source_bound_plan.revision);BindFieldsCore(instance,comp,c,objects,host,target,false,false,mergePlan);}finally {if(contents!=null)PrefabUtility.UnloadPrefabContents(contents);}});
                 }
                 r.status=r.failures.Count==0?"PASS":"FAIL";return r;
@@ -673,6 +717,9 @@ SceneRoots:
                         else {var existing=AssetDatabase.LoadAssetAtPath<GameObject>(host.asset_path);go=existing!=null?Object.Instantiate(existing):new GameObject(host.name);go.name=host.name;UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(go,preview);transient.Add(go);}
                         go.SetActive(false);Stamp(go,host,snapshot);
                         foreach(var comp in host.components) {var t=types[comp.id];if(go.GetComponents(t).Length>1)throw new InvalidOperationException("duplicate component host");if(go.GetComponent(t)==null)go.AddComponent(t);}
+                        // Existing hosts were admitted before mutation; their materials are applied
+                        // only on the actual persisted target below, never silently on a shell.
+                        if(!mergePlan.updateComponents.Any(key=>key.StartsWith(host.id+"|",StringComparison.Ordinal)))ApplyParticleDefaults(go,host,mergePlan,true);
                         ApplyGeometry(go,ImplicitGeometryWrites(c).Where(w=>w.host_id==host.id));
                         if(host.kind=="prefab") {Folder(Path.GetDirectoryName(host.asset_path).Replace('\\','/'));var existing=AssetDatabase.LoadAssetAtPath<GameObject>(host.asset_path);if(existing!=null)objects.Add(host.id,existing);else {var asset=PrefabUtility.SaveAsPrefabAsset(go,host.asset_path);if(asset==null)throw new InvalidOperationException("prefab shell save failed");objects.Add(host.id,asset);}}
                         else objects.Add(host.id,go);
@@ -689,8 +736,18 @@ SceneRoots:
                             CheckCoverage(instance,comp,c.source_bound_plan.revision);
                             BindFieldsCore(instance,comp,c,objects,host,target,true,mergePlan.updateComponents.Contains(host.id+"|"+comp.id),mergePlan);
                         }
+                        if(target is GameObject particleHost)ApplyParticleDefaults(particleHost,host,mergePlan,true);
                         if(contents!=null) {contents.SetActive(true);PrefabUtility.SaveAsPrefabAsset(contents,host.asset_path);objects[host.id]=AssetDatabase.LoadAssetAtPath<GameObject>(host.asset_path);}
-                        else EditorUtility.SetDirty(target);
+                        else {
+                            EditorUtility.SetDirty(target);
+                            if(host.kind=="config") {
+                                // Persist this exact bound config before later prefab saves can
+                                // refresh/reimport its dependencies. The shell on disk predates binding.
+                                if(AssetDatabase.GetAssetPath(target)!=host.asset_path||target.GetType()!=types[host.components[0].id])throw new InvalidOperationException("bound config asset identity mismatch: "+host.id+"/"+host.asset_path);
+                                AssetDatabase.SaveAssetIfDirty(target);
+                                foreach(var comp in host.components)BindFieldsCore(target,comp,c,objects,host,target,false,false,mergePlan);
+                            }
+                        }
                     }finally {if(contents!=null)PrefabUtility.UnloadPrefabContents(contents);}
                 }
                 // Final geometry writes run after explicit fields; the same bounded inventory defines admission/readback.
@@ -897,6 +954,7 @@ SceneRoots:
                 if(target==null)continue;
                 var state=new HostRollbackState();plan.hosts.Add(host.id,state);
                 if(target is GameObject go) {
+                    if(ParticleSpec(host)!=null)state.particleMaterials=ParticleRenderer(go).sharedMaterials.ToArray();
                     state.active=go.activeSelf;state.aspectLock=go.GetComponent<GdaiCameraAspectLock>()!=null;
                     var marker=go.GetComponent<GdaiGeneratedPlayableMarker>();state.marker=new MarkerRollbackState {present=marker!=null,profile=marker?.profileId,snapshot=marker?.snapshotId,role=marker?.ownedRole};
                     foreach(var component in host.components)if(go.GetComponent(Resolve(component,host.kind))!=null)state.components.Add(component.id);
@@ -948,6 +1006,7 @@ SceneRoots:
                         }
                     }
                     if(target is GameObject owned) {
+                        if(state.particleMaterials!=null)ParticleRenderer(owned).sharedMaterials=state.particleMaterials;
                         foreach(var restoreGeometry in state.geometry)restoreGeometry(owned);
                         foreach(var component in host.components.Where(component=>!state.components.Contains(component.id)).Reverse()) {var added=owned.GetComponent(Resolve(component,host.kind));if(added!=null)Object.DestroyImmediate(added);}
                         var aspectLock=owned.GetComponent<GdaiCameraAspectLock>();if(!state.aspectLock&&aspectLock!=null)Object.DestroyImmediate(aspectLock);
@@ -971,6 +1030,7 @@ SceneRoots:
             }
             if(existing.Count>0&&(prior==null||prior.source_bound_baseline_revision!=c.source_bound_plan.revision||prior.source_bound_field_baselines==null))throw new InvalidOperationException("safe second-sync requires prior validated field baseline; old manifest needs authorized readback/migration, no values adopted");
             if(existing.Count>0)AdmitGeometry(c,prior,existing);
+            AdmitParticleDefaults(c,prior,existing,plan);
             foreach(var host in c.source_bound_plan.objects)foreach(var comp in host.components) {
                 if(!existing.ContainsKey(host.id)) {foreach(var field in comp.fields.Where(field=>field.disposition!="preserve_external"))plan.AdmitInitialWrite(host.id,comp.id,field.path);continue;}
                 var target=existing[host.id];var type=Resolve(comp,host.kind);var instance=target is GameObject go?go.GetComponent(type):target;
@@ -1037,6 +1097,10 @@ SceneRoots:
                     else {if(property.propertyType==SerializedPropertyType.String)throw new InvalidOperationException("missing/unsupported baseline field: "+field.path);result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=comp.id,source_path=comp.source_path,type=comp.type,field=field.path,state=ExpectedFieldState(instance.GetType(),comp,field,c,objects,host,target)});}
                 }
             }
+            foreach(var host in c.source_bound_plan.objects.Where(h=>ParticleSpec(h)!=null)) {
+                var spec=ParticleSpec(host);
+                result.Add(new GdaiSourceBoundFieldBaseline {host_id=host.id,component_id=spec.id,source_path="__native_defaults",type=typeof(ParticleSystemRenderer).FullName,field="m_Materials",policy="pipeline_creation_default",state=MaterialState(new[]{PipelineParticleMaterial()})});
+            }
             foreach(var w in ImplicitGeometryWrites(c))result.Add(new GdaiSourceBoundFieldBaseline {host_id=w.host_id,component_id=w.component_id,type=w.type,source_path="__implicit_geometry",field=w.field,state=GeometryState((GameObject)objects[w.host_id],w)});
             return result;
         }
@@ -1076,6 +1140,7 @@ SceneRoots:
                     var f=EffectiveNativeField(comp,declaration,c,host);
                     if(f.disposition=="preserve_external")continue;
                     var property=ResolveProperty(so,comp,f.path);if(property==null)throw new InvalidOperationException("field missing: "+f.path);
+                    RequireParticleScalar(comp,f,property);
                     var decision=mergePlan?.Decision(host.id,comp.id,f.path)??FieldUpdateDecision.CreatorUpdate;
                     if(mergePlan!=null&&write&&!ShouldApplyFieldUpdate(decision)){if(decision==FieldUpdateDecision.PreserveUserEdit)mergePlan.VerifyRetained(host.id,comp.id,f.path,property,host.kind=="prefab"?self as GameObject:null,host.kind=="prefab"?host.asset_path:null);continue;}
                     if(mergePlan!=null&&!write&&decision==FieldUpdateDecision.PreserveUserEdit){mergePlan.VerifyRetained(host.id,comp.id,f.path,property,host.kind=="prefab"?self as GameObject:null,host.kind=="prefab"?host.asset_path:null);continue;}
@@ -1110,6 +1175,18 @@ SceneRoots:
                 else {shell=new GameObject("GDAI_DeclaredComparison");shell.SetActive(false);prototype=shell.AddComponent(instance.GetType());}
                 using(var expected=new SerializedObject(prototype)) {var property=ResolveProperty(expected,comp,field.path)??throw new InvalidOperationException("declared comparison field missing: "+field.path);Value(property,type,field.value,c,objects,host,self,true);return SerializedProperty.DataEquals(live,property);}
             }finally {if(shell!=null)Object.DestroyImmediate(shell);else if(prototype!=null)Object.DestroyImmediate(prototype);}
+        }
+        private static void RequireParticleScalar(GdaiSourceBoundPlayablePlan.ComponentSpec comp,GdaiSourceBoundPlayablePlan.Field field,SerializedProperty property) {
+            if(comp.source_path!="builtin"||comp.type!="UnityEngine.ParticleSystem")return;
+            if(!GdaiSourceBoundPlayablePlan.ValidFieldPath(comp,field.path)||field.disposition!="value"&&field.disposition!="source_default")throw new InvalidOperationException("ParticleSystem requires scalar value/default: "+field.path);
+            var value=field.value;
+            if(property.propertyType==SerializedPropertyType.Boolean&&value?.Type==JTokenType.Boolean)return;
+            if(property.propertyType==SerializedPropertyType.Integer&&value?.Type==JTokenType.Integer&&(double)value>=int.MinValue&&(double)value<=int.MaxValue)return;
+            if(property.propertyType==SerializedPropertyType.Float&&(value?.Type==JTokenType.Float||value?.Type==JTokenType.Integer)) {
+                var number=(double)value;var magnitude=Math.Abs(number);var single=(float)number;
+                if(!double.IsNaN(number)&&!double.IsInfinity(number)&&magnitude<=float.MaxValue&&(number==0||magnitude>=float.Epsilon)&&!float.IsInfinity(single)&&(number==0||single!=0))return;
+            }
+            throw new InvalidOperationException("ParticleSystem requires finite typed scalar serialized leaf: "+field.path);
         }
         private static Type NativeType(SerializedProperty p)
         {
@@ -1174,7 +1251,7 @@ SceneRoots:
                 if(!(v is JArray array)||array.Count>256)throw new InvalidOperationException("bounded list required");
                 var elementType=type.IsArray?type.GetElementType():type.IsGenericType&&type.GetGenericTypeDefinition()==typeof(List<>)?type.GetGenericArguments()[0]:null;
                 if(elementType==null)throw new InvalidOperationException("unsupported collection type");
-                if(write)p.arraySize=array.Count;else if(p.arraySize!=array.Count)throw new InvalidOperationException("list readback length mismatch");
+                if(write)p.arraySize=array.Count;else if(p.arraySize!=array.Count)throw new InvalidOperationException("list readback length mismatch: field="+p.propertyPath+" expected="+array.Count+" actual="+p.arraySize+" type="+p.serializedObject.targetObject.GetType().FullName+" asset_path="+AssetDatabase.GetAssetPath(p.serializedObject.targetObject));
                 for(int i=0;i<array.Count;i++)Value(p.GetArrayElementAtIndex(i),elementType,array[i],c,objects,host,self,write);return;
             }
             switch(p.propertyType) {
