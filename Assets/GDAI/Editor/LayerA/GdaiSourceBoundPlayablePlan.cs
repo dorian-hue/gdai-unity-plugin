@@ -193,7 +193,7 @@ namespace GDAI.Bridge.Editor.LayerA
             if(controllers.Count!=1||!p.objects.Any(o=>o.kind=="scene"&&o.components.Any(comp=>comp.type==controllers[0].type)))e.Add("real integration controller scene host required");
             foreach(var role in c.source_bound_context["roles"])if(!p.objects.Any(o=>o.role==(string)role["role"]&&o.entity_id==(string)role["entity_id"]&&(o.role!="enemy"||o.kind=="prefab")))e.Add("gated role host omitted");
             var references=((JArray)JToken.FromObject(p.objects)).DescendantsAndSelf().OfType<JObject>().Where(o=>o["reference_kind"]!=null).Select(o=>(string)o["target_id"]).ToList();
-            foreach(var host in p.objects.Where(o=>o.kind!="scene"))if(!p.objects.Where(o=>o.id!=host.id).Any(o=>((JArray)JToken.FromObject(o.components)).DescendantsAndSelf().OfType<JObject>().Any(r=>(string)r["reference_kind"]==host.kind&&(string)r["target_id"]==host.id)))e.Add("owned prefab/config is not consumed: "+host.id);
+            foreach(var host in p.objects.Where(o=>o.kind!="scene"))if(!p.objects.Where(o=>o.id!=host.id).Any(o=>((JArray)JToken.FromObject(o.components)).DescendantsAndSelf().OfType<JObject>().Any(r=>(string)r["target_id"]==host.id&&((string)r["reference_kind"]==host.kind||host.kind=="prefab"&&(string)r["reference_kind"]=="component"&&host.components.Any(comp=>comp.id==(string)r["target_component"])))))e.Add("owned prefab/config is not consumed: "+host.id);
             foreach(var asset in c.source_bound_context["assets"])if(!references.Contains((string)asset["asset_id"]))e.Add("adopted asset binding omitted: "+(string)asset["asset_id"]);
             return e;
         }

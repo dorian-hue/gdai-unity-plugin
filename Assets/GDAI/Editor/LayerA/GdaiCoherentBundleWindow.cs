@@ -46,7 +46,7 @@ namespace GDAI.Bridge.Editor.LayerA
 
         // MVP-C · device pairing + scoped token + selectors
         private const string DefaultFunctionsBase = "https://nceajhcsvrweplfhqodt.supabase.co/functions/v1";
-        public const string PluginVersion = "0.1.0-alpha.8.13";
+        public const string PluginVersion = "0.1.0-alpha.8.14";
         private const string PrefFunctionsBase = "GDAI_MvpC_FunctionsBase";
         private const string PrefPluginToken = "GDAI_MvpC_PluginToken";   // scoped gdai_plugin_v1.* token
         private const string PrefSelProject = "GDAI_MvpC_SelectedProjectId";
@@ -105,6 +105,19 @@ namespace GDAI.Bridge.Editor.LayerA
         private BundleStatus _status = BundleStatus.Fetched;
         private string _statusLine = "Idle.";
         private bool _busy;
+        private bool _completeSyncBusy;
+
+        // Nested fetch/import resets _busy. The complete operation and persisted reload
+        // work must still exclude every UI action that could replace its snapshot.
+        private bool CompleteSyncInProgress => _completeSyncBusy || (IsBound &&
+            (File.Exists(Path.Combine(GdaiProjectBinding.DefaultProjectRoot(), "Library", "GDAI", "pending-compose.json")) ||
+             File.Exists(Path.Combine(GdaiProjectBinding.DefaultProjectRoot(), "Library", "GDAI", "pending-finalize.json"))));
+
+        private bool CanStartCompleteSync => !_busy && !CompleteSyncInProgress && IsConnected && IsBound &&
+            _selProjectId == _binding.project_id &&
+            _projects.Exists(p => string.Equals(p.project_id, _binding.project_id, StringComparison.OrdinalIgnoreCase)) &&
+            (_bindingState == GdaiBindingState.PairedBoundReady ||
+             _bindingState == GdaiBindingState.SyncComplete || _bindingState == GdaiBindingState.SyncFailed);
 
         // Persisted summary mirror
         private string _sumSnapshot, _sumProject, _sumSource, _sumBundleType, _sumIcStatus, _sumDashStatus, _lastBackupPath;
@@ -271,7 +284,7 @@ namespace GDAI.Bridge.Editor.LayerA
             EditorGUILayout.LabelField("Connection", EditorStyles.boldLabel);
             EditorGUILayout.LabelField("Status", IsConnected ? "Connected" : (_connecting ? "Waiting for browser approval" : "Not connected"));
 
-            using (new EditorGUI.DisabledScope(_busy))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress))
             {
                 if (!IsConnected && !_connecting)
                 {
@@ -310,7 +323,7 @@ namespace GDAI.Bridge.Editor.LayerA
         {
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Project", EditorStyles.boldLabel);
-            using (new EditorGUI.DisabledScope(_busy || !IsConnected))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress || !IsConnected))
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
@@ -349,21 +362,23 @@ namespace GDAI.Bridge.Editor.LayerA
 
             // alpha.8 default path: one primary CTA only. The bundle selector/list UI is
             // intentionally not exposed here (Refresh Bundles list path is a known follow-up).
-            using (new EditorGUI.DisabledScope(_busy || !IsConnected || string.IsNullOrEmpty(_selProjectId)))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress || !IsConnected || string.IsNullOrEmpty(_selProjectId)))
             {
                 if (GUILayout.Button("Import Latest Bundle", GUILayout.Height(28)))
                     FetchProd(latest: true, import: true);
             }
 
-            // AUTO-0N P2: single user-triggered completion CTA. Enabled ONLY in
-            // PAIRED_BOUND_READY (bound exported project, catalog-authorized).
-            using (new EditorGUI.DisabledScope(_busy || _bindingState != GdaiBindingState.PairedBoundReady))
+            // First export remains reproducible. Later sync explicitly selects latest
+            // and uses the same full composition/finalization workflow.
+            using (new EditorGUI.DisabledScope(!CanStartCompleteSync))
             {
                 if (GUILayout.Button("Complete GDAI Export / Sync Project", GUILayout.Height(32)))
                     CompleteExportSync();
+                if (GUILayout.Button("Sync Latest Complete Bundle to Bound Project", GUILayout.Height(32)))
+                    CompleteLatestSync();
             }
-            if (IsBound && _bindingState != GdaiBindingState.PairedBoundReady)
-                EditorGUILayout.HelpBox("Complete Sync requires state PAIRED_BOUND_READY (current: " + _bindingState + ").", MessageType.Info);
+            if (IsBound && !CanStartCompleteSync)
+                EditorGUILayout.HelpBox("Complete Sync requires a connected, catalog-authorized bound project with no sync in progress (current: " + _bindingState + ").", MessageType.Info);
 
             if (HasLastSnapshot)
             {
@@ -381,7 +396,7 @@ namespace GDAI.Bridge.Editor.LayerA
             EditorGUILayout.HelpBox("Support fallback: calls the GDAI backend bundle proxy with a pasted user access token. " +
                                     "It never contacts the database directly and never uses a service_role or anon key here.", MessageType.None);
 
-            using (new EditorGUI.DisabledScope(_busy))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress))
             {
                 EditorGUI.BeginChangeCheck();
                 _prodUrl = EditorGUILayout.TextField("Backend Function URL", _prodUrl);
@@ -445,7 +460,7 @@ namespace GDAI.Bridge.Editor.LayerA
         private void DrawPrimaryButtons()
         {
             EditorGUILayout.Space();
-            using (new EditorGUI.DisabledScope(_busy))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress))
             {
                 using (new EditorGUI.DisabledScope(!IsConfigured))
                 {
@@ -472,7 +487,7 @@ namespace GDAI.Bridge.Editor.LayerA
             _showSceneWiring = EditorGUILayout.Foldout(_showSceneWiring, "Optional: Scene Wiring", true);
             if (!_showSceneWiring) return;
 
-            using (new EditorGUI.DisabledScope(_busy))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress))
             {
                 if (GUILayout.Button("Auto-bind Scene References")) AutoBindScene();
                 if (GUILayout.Button("Auto-bind Input Actions")) AutoBindInputActions();
@@ -551,7 +566,7 @@ namespace GDAI.Bridge.Editor.LayerA
                                     "The production connector will call a GDAI backend bundle endpoint instead. " +
                                     "Never paste a service_role key — use only the project anon/publishable key.", MessageType.Warning);
 
-            using (new EditorGUI.DisabledScope(_busy))
+            using (new EditorGUI.DisabledScope(_busy || CompleteSyncInProgress))
             {
                 EditorGUI.BeginChangeCheck();
                 _supabaseUrl = EditorGUILayout.TextField("Supabase URL", _supabaseUrl);
@@ -763,6 +778,7 @@ namespace GDAI.Bridge.Editor.LayerA
         // Manual JWT fallback (collapsed): reuses the same proxy fetch core with a pasted user JWT.
         private async void ProdFetch(bool import)
         {
+            if (_busy || CompleteSyncInProgress) return;
             if (string.IsNullOrWhiteSpace(_prodUrl)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: Backend Function URL is required."); return; }
             if (string.IsNullOrWhiteSpace(_prodProjectId)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: Project ID is required."); return; }
             if (!_prodUseLatest && string.IsNullOrWhiteSpace(_prodSnapshotId)) { SetStatus(BundleStatus.FailedValidation, "Manual fallback: enter a Snapshot ID or enable 'Fetch latest'."); return; }
@@ -786,6 +802,18 @@ namespace GDAI.Bridge.Editor.LayerA
                 dto = latest
                     ? await GdaiBundleProxyClient.FetchLatest(proxyUrl.Trim(), projectId.Trim(), token)
                     : await GdaiBundleProxyClient.FetchBySnapshot(proxyUrl.Trim(), projectId.Trim(), snapshotId.Trim(), token);
+
+                // Complete sync retains this one returned identity through import,
+                // composition, receipt and reload. Reject cross-project or wrong exact
+                // responses before any summary, code or scene write.
+                if (deferSceneBackgroundUntilSourceAdmission &&
+                    (dto == null || !string.Equals(dto.project_id, projectId, StringComparison.OrdinalIgnoreCase) ||
+                     !Guid.TryParse(dto.snapshot_id, out var returnedSnapshot) || returnedSnapshot == Guid.Empty ||
+                     (!latest && !string.Equals(dto.snapshot_id, snapshotId, StringComparison.OrdinalIgnoreCase))))
+                {
+                    SetStatus(BundleStatus.FailedValidation, "Complete Sync response project/snapshot identity mismatch; import blocked.");
+                    return;
+                }
 
                 var dtoErrors = GdaiBundleProxyClient.ValidateDto(dto);
                 if (dtoErrors.Count > 0)
@@ -1053,6 +1081,7 @@ namespace GDAI.Bridge.Editor.LayerA
 
         private async void FetchProd(bool latest, bool import)
         {
+            if (_busy || CompleteSyncInProgress) return;
             if (!IsConnected) { SetStatus(BundleStatus.FailedValidation, "Not connected. Connect to GDAI first."); return; }
             if (string.IsNullOrEmpty(_selProjectId)) { SetStatus(BundleStatus.FailedValidation, "Select a project first."); return; }
             if (!AssertBoundProjectOrFail()) return; // AUTO-0N P1: fail closed before network/import
@@ -1120,18 +1149,25 @@ namespace GDAI.Bridge.Editor.LayerA
         // step; writes a completion receipt ONLY on full success; measures
         // outcomes (scene elements / colliders) instead of trusting step
         // return values where legacy seams are void menu entries.
-        private async void CompleteExportSync()
+        private async void CompleteExportSync() => await RunCompleteSync(latest: false);
+
+        private async void CompleteLatestSync() => await RunCompleteSync(latest: true);
+
+        private async Task RunCompleteSync(bool latest)
         {
-            if (_bindingState != GdaiBindingState.PairedBoundReady) return;
+            if (!CanStartCompleteSync) return;
             if (!AssertBoundProjectOrFail()) return;
             var startedUtc = DateTime.UtcNow;
+            _completeSyncBusy = true;
             _bindingState = GdaiBindingState.Syncing;
+            _lastBinaryAssetCount = 0;
+            _lastPreservedMetaCount = 0;
             string failPhase = null;
             try
             {
                 // 1-6: fetch + validate + confirm + code import + asset payloads
                 //      + role map + background (existing chained pipeline).
-                await RunCompleteFetchImport();
+                await RunCompleteFetchImport(latest);
                 if (_status != BundleStatus.RefreshTriggered) { failPhase = "FETCH_IMPORT"; return; }
 
                 // Source-bound admission runs before the canonical scene/build settings and
@@ -1246,6 +1282,7 @@ namespace GDAI.Bridge.Editor.LayerA
                         "Complete Sync FAILED at phase " + (failPhase ?? "UNKNOWN") +
                         ". No receipt written. Recovery: fix the reported phase, then click Complete Sync again (imports are backup-protected).");
                 }
+                _completeSyncBusy = false;
                 Repaint();
             }
         }
@@ -1258,17 +1295,17 @@ namespace GDAI.Bridge.Editor.LayerA
             GDAI.Bridge.Editor.LayerC.GdaiPlayableComposerCta.InspectImportedContractReadiness(
                 out importedContractPresent, out detail);
 
-        private async Task RunCompleteFetchImport()
+        private async Task RunCompleteFetchImport(bool latest)
         {
             string proxyUrl = _functionsBase.TrimEnd('/') + "/unity-bundle-proxy";
             // B-3 (exact snapshot id): the exported binding pins the snapshot the export
             // was built against. When present, Complete Sync fetches THAT id — never a
             // racy latest — so the binding, the import and the receipt all name the same
             // artifact. An exact fetch that fails FAILS the sync (fail closed); there is
-            // no silent fallback to latest. latest remains only for legacy bindings that
-            // carry no id.
+            // no silent fallback to latest. An explicit later sync resolves latest once
+            // below; legacy bindings without an id keep their established latest behavior.
             string boundSnapshot = _binding != null ? (_binding.code_bundle_snapshot_id ?? "").Trim() : "";
-            if (boundSnapshot.Length > 0)
+            if (!latest && boundSnapshot.Length > 0)
             {
                 Debug.Log("[GDAI][CompleteSync] exact-snapshot fetch from binding: " + boundSnapshot);
                 await RunProxyFetch(proxyUrl, _selProjectId, latest: false, snapshotId: boundSnapshot, token: _pluginToken,
