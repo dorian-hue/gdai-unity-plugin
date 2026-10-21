@@ -375,6 +375,39 @@ SceneRoots:
                 }
             }return writes;
         }
+        private static GdaiSourceBoundPlayablePlan.Field EffectiveNativeField(GdaiSourceBoundPlayablePlan.ComponentSpec component,GdaiSourceBoundPlayablePlan.Field field,GdaiPlayableContract c,GdaiSourceBoundPlayablePlan.Host host)
+        {
+            if(component.source_path!="builtin")return field;
+            var owned=ImplicitGeometryWrites(c).Where(w=>w.host_id==host.id&&w.component_id==component.id&&w.type==component.type&&w.field==field.path).ToList();
+            if(owned.Count==0)return field;
+            if(owned.Count!=1)throw new InvalidOperationException("ambiguous native geometry owner: "+field.path);
+            var expected=owned[0].expected;
+            if(field.disposition!="value"&&field.disposition!="source_default")throw new InvalidOperationException("native geometry requires a declared typed value: "+field.path);
+            if(expected.Type==JTokenType.Boolean) {
+                if(field.value?.Type!=JTokenType.Boolean)throw new InvalidOperationException("native geometry boolean required: "+field.path);
+            }else if(expected.Type==JTokenType.Float||expected.Type==JTokenType.Integer) {
+                if(field.value==null||field.value.Type!=JTokenType.Float&&field.value.Type!=JTokenType.Integer)throw new InvalidOperationException("native geometry number required: "+field.path);
+                var value=(double)field.value;var single=(float)value;
+                if(double.IsNaN(value)||double.IsInfinity(value)||float.IsNaN(single)||float.IsInfinity(single))throw new InvalidOperationException("finite native geometry number required: "+field.path);
+            }else throw new InvalidOperationException("unsupported native geometry declaration: "+field.path);
+            if(field.disposition=="source_default") {
+                var shell=new GameObject("GDAI_NativeDeclaredDefault");shell.SetActive(false);
+                try {var instance=shell.AddComponent(GdaiSourceBoundPlayablePlan.Builtin(component.type));using(var serialized=new SerializedObject(instance)) {
+                    var property=ResolveProperty(serialized,component,field.path)??throw new InvalidOperationException("native geometry field absent");
+                    Value(property,NativeType(property),field.value,c,new Dictionary<string,Object>(),host,shell,false);
+                }}finally {Object.DestroyImmediate(shell);}
+            }
+            return new GdaiSourceBoundPlayablePlan.Field {path=field.path,disposition="value",value=expected.DeepClone(),rationale=field.rationale};
+        }
+        public static List<GdaiNativeGeometryOverride> NativeGeometryOverrides(GdaiPlayableContract c)
+        {
+            var result=new List<GdaiNativeGeometryOverride>();
+            foreach(var host in c.source_bound_plan.objects)foreach(var component in host.components)foreach(var field in component.fields) {
+                var effective=EffectiveNativeField(component,field,c,host);
+                if(!ReferenceEquals(effective,field))result.Add(new GdaiNativeGeometryOverride {host_id=host.id,component_id=component.id,field=field.path,owner="canonical_native_geometry",declared=field.value.DeepClone(),effective=effective.value.DeepClone()});
+            }
+            return result;
+        }
         private static JToken GeometryState(GameObject go,GeometryWrite w) {
             if(w.type=="UnityEngine.Transform")return VectorState(w.field=="position"?go.transform.position:go.transform.localScale);
             var camera=go.GetComponent<Camera>()??throw new InvalidOperationException("prior camera removed");
@@ -548,6 +581,7 @@ SceneRoots:
         {
             var m=GdaiPlayableOwnershipManifest.Load();
             if(m==null||m.schema_version!=GdaiPlayableAssetsManifest.SchemaVersion||m.project_id!=project||m.snapshot_id!=snapshot||m.profile_id!=c.profile_id||m.contract_revision!=c.contract_revision||m.contract_sha256!=sha)throw new InvalidOperationException("source-bound ownership identity mismatch");
+            if(!JToken.DeepEquals(JToken.FromObject(m.source_bound_native_geometry??new List<GdaiNativeGeometryOverride>()),JToken.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(NativeGeometryOverrides(c)))))throw new InvalidOperationException("native geometry ownership diagnostic mismatch");
             var expected=c.source_bound_plan.objects.Where(o=>o.kind!="scene").Select(o=>o.asset_path).Concat(new[]{c.canonical_scene.path}).ToArray();
             if(m.assets.Count!=expected.Length||!new HashSet<string>(m.assets.Select(a=>a.path)).SetEquals(expected))throw new InvalidOperationException("source-bound ownership asset set mismatch");
             foreach(var asset in m.assets)if(string.IsNullOrEmpty(asset.guid)||AssetDatabase.AssetPathToGUID(asset.path)!=asset.guid)throw new InvalidOperationException("source-bound asset GUID mismatch");
@@ -561,7 +595,7 @@ SceneRoots:
         {
             var persisted=EditorSceneManager.OpenPreviewScene(scenePath);
             try {
-                var r=new GdaiPlayableReceipt {project_id=project,snapshot_id=snapshot,contract_revision=c.contract_revision,contract_sha256=sha,generated_at=now.ToString("o"),manual_assembly_steps=0};
+                var r=new GdaiPlayableReceipt {project_id=project,snapshot_id=snapshot,contract_revision=c.contract_revision,contract_sha256=sha,generated_at=now.ToString("o"),manual_assembly_steps=0,source_bound_native_geometry=NativeGeometryOverrides(c)};
                 void Check(string key,Action check) {try {check();r.checks.Add(new GdaiReceiptCheck {key=key,expected="persisted source-bound identity/serialized readback",actual="verified",pass=true});}catch(Exception ex){r.checks.Add(new GdaiReceiptCheck {key=key,expected="persisted source-bound identity/serialized readback",actual="failed",pass=false});r.failures.Add(key+": "+ex.Message);}}
                 Check("contract",()=>{var errors=GdaiSourceBoundPlayablePlan.Validate(c);if(errors.Count>0)throw new InvalidOperationException(string.Join(";",errors));});
                 Check("saved_scene",()=>{if(scenePath!=c.canonical_scene.path||!File.Exists(Path.Combine(Root,scenePath))||!persisted.IsValid()||!persisted.isLoaded||persisted.path!=scenePath)throw new InvalidOperationException("persisted scene path missing/mismatch");if(!EditorBuildSettings.scenes.Any(s=>s.path==scenePath&&s.enabled))throw new InvalidOperationException("Build Settings scene missing");});
@@ -1038,7 +1072,8 @@ SceneRoots:
             if(comp.source_path!="builtin"&&revision==1&&SerializedTypeFields(instance.GetType()).Any(f=>Sensitive(f.Name)))throw new InvalidOperationException("sensitive serialized configuration unsupported");
             using(var so=new SerializedObject(instance)) {
                 RequireDistinctPropertyTargets(so,comp);
-                foreach(var f in comp.fields) {
+                foreach(var declaration in comp.fields) {
+                    var f=EffectiveNativeField(comp,declaration,c,host);
                     if(f.disposition=="preserve_external")continue;
                     var property=ResolveProperty(so,comp,f.path);if(property==null)throw new InvalidOperationException("field missing: "+f.path);
                     var decision=mergePlan?.Decision(host.id,comp.id,f.path)??FieldUpdateDecision.CreatorUpdate;
@@ -1048,7 +1083,7 @@ SceneRoots:
                     if(mergePlan!=null&&write)mergePlan.MarkWriteStarted(host.id,comp.id,f.path);
                     if(!write&&revision>=2&&DeclaredNativeEqualityShape(expectedType,new HashSet<Type>())) {if(!MatchesDeclaredProperty(instance,comp,property,expectedType,f,c,objects,host,self))throw new InvalidOperationException("declared text/curve readback mismatch: "+f.path);continue;}
                     if(f.disposition=="reference") {
-                        var target=Reference(f.reference_kind,f.target_id,f.target_component,c,objects,host,self);
+                        var target=Reference(f.reference_kind,f.target_id,f.target_component,expectedType,c,objects,host,self);
                         ObjectReference(property,expectedType,target,write);
                     }else if(f.disposition=="optional_null") {
                         if(property.propertyType!=SerializedPropertyType.ObjectReference)throw new InvalidOperationException("optional-null only supported for serialized object refs");
@@ -1095,7 +1130,7 @@ SceneRoots:
                 default:throw new InvalidOperationException("unsupported explicit native configuration: "+p.name);
             }
         }
-        private static Object Reference(string kind,string id,string component,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self)
+        private static Object Reference(string kind,string id,string component,Type requestedType,GdaiPlayableContract c,Dictionary<string,Object> objects,GdaiSourceBoundPlayablePlan.Host host,Object self)
         {
             if(kind=="asset") {
                 var entries=c.source_bound_context["assets"].Where(a=>(string)a["asset_id"]==id).ToList();if(entries.Count!=1)throw new InvalidOperationException("adopted asset identity missing");
@@ -1106,8 +1141,8 @@ SceneRoots:
                 string expectedType=(string)expected["asset_type"],expectedMime=(string)expected["mime_type"],expectedProject=(string)expected["project_id"],expectedEntity=(string)expected["entity_id"],expectedCategory=(string)expected["audio_category"],expectedSlot=(string)expected["project_audio_asset_id"],expectedCandidate=(string)expected["audio_candidate_id"];
                 if(expectedType=="audio"&&expectedCategory=="bgm"&&(string.IsNullOrEmpty(expectedProject)||!string.IsNullOrEmpty(expectedEntity)||expectedSlot!=id||string.IsNullOrEmpty(expectedCandidate)))throw new InvalidOperationException("adopted BGM expected lineage incomplete");
                 if(expectedType!=null&&expectedType!=imported.asset_type||expectedMime!=null&&expectedMime!=imported.mime_type||expectedProject!=null&&expectedProject!=imported.source_project_id||expectedEntity!=null&&expectedEntity!=imported.entity_id||expectedCategory!=null&&expectedCategory!=imported.audio_category||expectedSlot!=null&&expectedSlot!=imported.project_audio_asset_id||expectedCandidate!=null&&expectedCandidate!=imported.audio_candidate_id)throw new InvalidOperationException("adopted asset imported lineage mismatch");
-                if(GdaiImportedAssetRegistry.TryGetSpriteByAssetId(id,out var sprite,out _))return sprite;
-                var asset=AssetDatabase.LoadAssetAtPath<Object>(path);if(asset==null)throw new InvalidOperationException("adopted asset unavailable");return asset;
+                if(!GdaiImportedAssetRegistry.TryLoadAsset(imported,requestedType,out var asset,out var reason))throw new InvalidOperationException("adopted asset resolution failed: "+reason);
+                return asset;
             }
             var targets=c.source_bound_plan.objects.Where(o=>o.id==id).ToList();if(targets.Count!=1)throw new InvalidOperationException("owned reference identity missing");var targetHost=targets[0];
             if(host.kind!="scene"&&targetHost.kind=="scene")throw new InvalidOperationException("persistent asset cannot reference scene");
@@ -1146,7 +1181,7 @@ SceneRoots:
                 case SerializedPropertyType.ObjectReference:
                     if(v.Type==JTokenType.Null)throw new InvalidOperationException("required nested object reference cannot be null: "+p.propertyPath);
                     if(!(v is JObject reference))throw new InvalidOperationException("typed reference value required");
-                    ObjectReference(p,type,Reference((string)reference["reference_kind"],(string)reference["target_id"],(string)reference["target_component"],c,objects,host,self),write);return;
+                    ObjectReference(p,type,Reference((string)reference["reference_kind"],(string)reference["target_id"],(string)reference["target_component"],type,c,objects,host,self),write);return;
                 case SerializedPropertyType.Boolean:
                     if(v.Type!=JTokenType.Boolean)throw new InvalidOperationException("bool required");if(write)p.boolValue=(bool)v;else if(p.boolValue!=(bool)v)throw new InvalidOperationException("bool readback mismatch");return;
                 case SerializedPropertyType.Integer:

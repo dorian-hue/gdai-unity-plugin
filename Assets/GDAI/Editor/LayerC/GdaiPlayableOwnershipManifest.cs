@@ -23,6 +23,7 @@ using UnityEngine;
 
 namespace GDAI.Bridge.Editor.LayerC
 {
+    [Serializable] public class GdaiNativeGeometryOverride { public string host_id,component_id,field,owner; public JToken declared,effective; }
     [Serializable] public class GdaiOwnedObjectRecord { public string name; public string role; public string profile_id; public string snapshot_id; }
     [Serializable] public class GdaiOwnedAssetRecord { public string kind; public string path; public string guid; }
 
@@ -38,6 +39,7 @@ namespace GDAI.Bridge.Editor.LayerC
         public int contract_revision;
         public string contract_sha256;
         public string generated_at;
+        public List<GdaiNativeGeometryOverride> source_bound_native_geometry;
         public int source_bound_baseline_revision;
         public List<GdaiSourceBoundFieldBaseline> source_bound_field_baselines;
         public GdaiOwnedAssetRecord input_asset;
@@ -126,7 +128,7 @@ namespace GDAI.Bridge.Editor.LayerC
         {
             error=null;
             try {
-                var m=new GdaiPlayableAssetsManifest {schema_version=GdaiPlayableAssetsManifest.SchemaVersion,project_id=project,profile_id=c.profile_id,snapshot_id=snapshot,contract_revision=c.contract_revision,contract_sha256=sha,generated_at=DateTime.UtcNow.ToString("o"),canonical_scene=AssetRecord("canonical_scene",scene)};
+                var m=new GdaiPlayableAssetsManifest {schema_version=GdaiPlayableAssetsManifest.SchemaVersion,project_id=project,profile_id=c.profile_id,snapshot_id=snapshot,contract_revision=c.contract_revision,contract_sha256=sha,generated_at=DateTime.UtcNow.ToString("o"),canonical_scene=AssetRecord("canonical_scene",scene),source_bound_native_geometry=GdaiSourceBoundPlayableComposer.NativeGeometryOverrides(c)};
                 // Preserve the previous receipt baseline until the saved/reopened result passes.
                 var previous=Load();if(previous!=null&&previous.project_id==project&&previous.profile_id==c.profile_id){m.source_bound_baseline_revision=previous.source_bound_baseline_revision;m.source_bound_field_baselines=previous.source_bound_field_baselines;}
                 m.assets.Add(m.canonical_scene);

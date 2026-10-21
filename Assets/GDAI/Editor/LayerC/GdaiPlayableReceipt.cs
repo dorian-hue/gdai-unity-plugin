@@ -41,6 +41,7 @@ namespace GDAI.Bridge.Editor.LayerC
         public string generated_at;
         public string status;                 // PASS | PARTIAL | FAIL
         public int manual_assembly_steps;
+        public List<GdaiNativeGeometryOverride> source_bound_native_geometry;
         public string framing_inputs;         // §6 coverage: fit_arena inputs, verified via camera_ortho_size
         public List<GdaiReceiptCheck> checks = new List<GdaiReceiptCheck>();
         public List<string> failures = new List<string>();

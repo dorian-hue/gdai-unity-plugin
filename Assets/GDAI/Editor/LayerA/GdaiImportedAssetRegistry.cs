@@ -180,6 +180,43 @@ namespace GDAI.Bridge.Editor.LayerA
             return TryLoadSprite(entry, out sprite, out reason);
         }
 
+        /// <summary>Resolve an adopted path using its declared consumer type, without changing registry identity.</summary>
+        public static bool TryLoadAsset(GdaiAssetRegistryEntry entry, Type requestedType,
+            out UnityEngine.Object asset, out string reason)
+        {
+            asset = null;
+            reason = null;
+            if (entry == null || string.IsNullOrEmpty(entry.unity_path)) { reason = "asset_entry_missing"; return false; }
+            if (requestedType == null || !typeof(UnityEngine.Object).IsAssignableFrom(requestedType))
+            { reason = "asset_requested_type_invalid"; return false; }
+            var all = AssetDatabase.LoadAllAssetsAtPath(entry.unity_path);
+            var matches = new List<UnityEngine.Object>();
+            foreach (var value in all)
+                if (value != null && requestedType.IsInstanceOfType(value) && !matches.Contains(value)) matches.Add(value);
+            if (matches.Count == 0) { reason = "asset_missing_or_wrong_type:" + requestedType.FullName + ":" + entry.unity_path; return false; }
+            if (requestedType == typeof(Sprite))
+            {
+                // Entity Sprite IDs already select Unity's default Sprite subasset. Keep that policy;
+                // a project image has no entity role and must supply a unique Sprite projection.
+                if (IsEntitySprite(entry))
+                {
+                    if (!TryLoadSprite(entry, out var sprite, out reason)) return false;
+                    if (!matches.Contains(sprite)) { reason = "entity_sprite_default_unavailable:" + entry.unity_path; return false; }
+                    asset = sprite;
+                    return true;
+                }
+                if (matches.Count != 1) { reason = "asset_subasset_ambiguous:" + entry.unity_path; return false; }
+                asset = matches[0];
+                return true;
+            }
+            // Object/Texture/Audio fields retain the main imported asset when assignable.
+            var main = AssetDatabase.LoadMainAssetAtPath(entry.unity_path);
+            if (main != null && requestedType.IsInstanceOfType(main)) { asset = main; return true; }
+            if (matches.Count != 1) { reason = "asset_subasset_ambiguous:" + entry.unity_path; return false; }
+            asset = matches[0];
+            return true;
+        }
+
         /// <summary>All registry entries (empty list when registry absent). For Jason/Layer B enumeration.</summary>
         public static List<GdaiAssetRegistryEntry> All()
         {
